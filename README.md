@@ -14,6 +14,19 @@ This bridge fixes that, safely. Once installed, you can say things in Cowork lik
 
 ---
 
+## Wait — do you even need this?
+
+**Maybe not.** It depends on *where* you talk to Claude:
+
+| If you use… | Can Claude already run things on your Mac? | Do you need this bridge? |
+|---|---|---|
+| **The Claude Desktop app on your Mac** | ✅ Yes — it runs right on your machine | **No.** Just ask Claude to run things. Nothing to install. |
+| **Cowork in your browser / the cloud** | ❌ No — it runs in a sealed cloud sandbox that can't see your Mac | **Yes** — this bridge is the only way to connect it. |
+
+Not sure which you are? Just paste the [one setup line below](#install-about-2-minutes) into your Claude chat — Claude checks for you and, if you don't need the bridge, it'll tell you so and skip the whole thing.
+
+---
+
 ## Is this safe?
 
 Yes — by design.
@@ -29,47 +42,52 @@ You can [uninstall it completely with one command](#uninstall) at any time.
 
 ## Install (about 2 minutes)
 
-Two quick steps: paste one line into your Mac's Terminal, then ask Claude in Cowork to finish the setup.
-
-### Step 1 — On your Mac (one time)
-
-Open your Terminal app (Spotlight → "Terminal") and paste this single line:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/abhinaykrupa/cowork-to-code-bridge/main/install.sh | bash
-```
-
-Press Enter. You'll see status lines scroll by. When it ends with `DONE`, the Mac side is set up. Takes about 30 seconds.
-
-> **Don't have Python 3.10+?** Run `brew install python@3.12` first. If you don't have Homebrew, install it from [brew.sh](https://brew.sh) (one paste, ~5 minutes).
-
-### Step 2 — In Cowork
-
-Open any Cowork session and just say:
-
-> **"Set up the cowork-to-code bridge."**
-
-That's it. Claude will:
-1. Add the plugin marketplace if it's not already added (one-time `/plugin marketplace add abhinaykrupa/cowork-bridge-marketplace` — Claude runs this for you)
-2. Install the plugin if it's not already installed (one-time `/plugin install cowork-to-code-bridge@cowork-bridge-marketplace` — also driven by Claude)
-3. Check if the bridge daemon is running on your Mac
-4. If yes → confirm it's working and you're done
-5. If no → tell you exactly what to paste in your Mac terminal (which is the install line above)
-6. Verify everything works
-7. Tell you what you can ask it to do
-
-You only need to set up the Mac side **once per Mac**. After that, every new Cowork session just confirms the bridge is alive and you're good to go.
-
-### Prefer to install manually?
-
-If you'd rather paste the plugin commands yourself in Claude Code:
+**You only paste one thing to start.** Copy the line below and paste it into any Claude Cowork chat:
 
 ```
-/plugin marketplace add abhinaykrupa/cowork-bridge-marketplace
-/plugin install cowork-to-code-bridge@cowork-bridge-marketplace
+Set up my Mac bridge using https://github.com/abhinaykrupa/cowork-to-code-bridge — follow its SETUP.md
 ```
 
-Then run the Mac installer (the curl line above) if you haven't already.
+That's the whole start. Claude reads the setup guide, installs what it needs inside Cowork, and then **walks you through the one remaining step on your Mac** (it'll tell you exactly where to click and what to paste — about 30 seconds, one time). When it's done, Claude confirms your Mac is connected and you can start asking it to run things.
+
+> **No plugins, no `/plugin` command, no second setup.** `/plugin` doesn't work inside Cowork, so this doesn't use it. Just the one paste above; Claude drives the rest.
+
+### What Claude will have you do (so there are no surprises)
+
+1. **In Cowork** — Claude installs a small helper and checks if your Mac is already connected. If it is, you're instantly done.
+2. **On your Mac (one time only)** — if it's not connected yet, Claude will say: *open the Terminal app, paste this one line, press Enter, wait ~30 seconds.* The line is:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/abhinaykrupa/cowork-to-code-bridge/main/install.sh | bash
+   ```
+   You don't need to understand it — Claude tells you exactly what to do and confirms when it worked.
+3. **Back in Cowork** — say "done." Claude verifies the connection and tells you what you can ask for.
+
+After this, **every future Cowork session connects automatically** — no terminal, no re-setup.
+
+> **Don't have Python 3.10+ on your Mac?** Claude will catch this and tell you to run `brew install python@3.12` first. (No Homebrew? Get it at [brew.sh](https://brew.sh) — one paste.)
+
+<details>
+<summary>Doing it manually (for developers)</summary>
+
+The Cowork paste-line just tells Claude to follow [`SETUP.md`](./SETUP.md). You can do the same steps by hand:
+
+1. **On your Mac**, run the installer (starts the daemon, survives reboots):
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/abhinaykrupa/cowork-to-code-bridge/main/install.sh | bash
+   ```
+2. **In the Cowork sandbox**, install the client and probe:
+   ```bash
+   pip install --quiet "git+https://github.com/abhinaykrupa/cowork-to-code-bridge.git@main" && python -c "from cowork_to_code_bridge import daemon_alive; print('BRIDGE LIVE' if daemon_alive(ping_timeout=10) else 'DAEMON NOT REACHABLE')"
+   ```
+   - `BRIDGE LIVE` → done.
+   - `DAEMON NOT REACHABLE` → the client can't find the bridge folder. Set `BRIDGE_ROOT` to the path printed in your Mac's `~/.cowork-to-code-bridge/.env`, then re-probe:
+     ```python
+     import os
+     os.environ["BRIDGE_ROOT"] = "/Users/you/.cowork-to-code-bridge"  # from your Mac's .env
+     from cowork_to_code_bridge import daemon_alive
+     print(daemon_alive(ping_timeout=10))
+     ```
+</details>
 
 ---
 

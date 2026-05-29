@@ -358,16 +358,20 @@ step "DONE. Bridge is installed and running."
 
 cat <<DONE
 
-$(c_green "Now go to your Cowork session and just say:")
+$(c_green "✓ Your Mac side is ready. Now go back to your Cowork chat and say:")
 
-  Set up the cowork-to-code bridge.
+  done
 
-Cowork will add the plugin marketplace, install the plugin, detect that
-the Mac daemon is already running, and walk you through the rest.
+Cowork will detect that this daemon is running and confirm the
+connection. After that you can ask it to run things on your Mac in
+plain English — no further setup.
 
-Prefer to do it manually? In a Claude Code or Cowork session, run:
-  /plugin marketplace add abhinaykrupa/cowork-bridge-marketplace
-  /plugin install cowork-to-code-bridge@cowork-bridge-marketplace
+(If you came here on your own without starting in Cowork: open any
+Cowork chat and paste this one line, then follow what it says —
+  Set up my Mac bridge using https://github.com/$REPO — follow its SETUP.md
+)
+
+Bridge folder (Cowork may ask for this): $BRIDGE_ROOT
 
 Manual verification (optional):
   launchctl print gui/$UID_NUM/$LABEL   # full agent state

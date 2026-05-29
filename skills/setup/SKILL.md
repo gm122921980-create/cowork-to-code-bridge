@@ -1,37 +1,41 @@
 ---
 name: cowork-to-code-bridge-setup
-description: Walk the user through installing the cowork-to-code-bridge so Cowork can run commands on their Mac. Triggers on natural-language requests like "set up the cowork-to-code bridge", "set up cowork bridge", "install cowork bridge", "connect cowork to my Mac", "hook Cowork up to my Mac", or any similar phrasing about bridging Cowork to the user's local machine.
+description: Walk the user through installing the cowork-to-code-bridge so Cowork can run commands on their Mac. Triggers on natural-language requests like "set up the cowork-to-code bridge", "set up my Mac bridge", "set up cowork bridge", "install cowork bridge", "connect cowork to my Mac", "hook Cowork up to my Mac", or any similar phrasing about bridging Cowork to the user's local machine.
 ---
 
 # Setup skill — cowork-to-code-bridge
 
-You are walking the user through a **one-paste-and-go install**. The user said something like "set up the cowork-to-code bridge" in natural language. You figure out the right commands and drive the rest.
+> **This skill mirrors [`SETUP.md`](../../SETUP.md) at the repo root.** `SETUP.md` is the canonical playbook that Cowork fetches when a user pastes the repo URL (the primary entry path, since `/plugin` doesn't work in Cowork). This skill exists as a fallback for sessions that already have it loaded. If the two ever disagree, `SETUP.md` wins — keep them in sync.
+
+You are walking the user through a **one-paste-and-go install**. The user said something like "set up my Mac bridge" in natural language. You figure out the right commands and drive the rest.
 
 ## Your job in one sentence
 
 Get the Mac daemon installed and verified working, with the user running **exactly one terminal command** of their own.
 
-## Step 0 — ensure the plugin marketplace is added
+## Step 0 — install the bridge client in this Cowork sandbox
 
-The bridge ships as a Claude Code plugin distributed through the `cowork-bridge-marketplace`. If this is the first time the user has interacted with the bridge plugin in Claude Code, the marketplace probably isn't added yet.
+**Do NOT use `/plugin` for any of this.** `/plugin` does not work inside Cowork (it's gated to the interactive terminal CLI). The Cowork sandbox gets the bridge client by `pip install`, not by a plugin.
 
-Check whether the marketplace is already registered. If you can't tell, just attempt to add it — it's idempotent. Run:
+The bridge has two halves: a **daemon on the Mac** (installed in Step 2 via curl) and a **client in this sandbox** (the `cowork_to_code_bridge` Python package, which exposes `call_remote` and `daemon_alive`). You need the client importable here before you can probe anything.
 
-```
-/plugin marketplace add abhinaykrupa/cowork-bridge-marketplace
-```
+First check if it's already importable:
 
-If the user reports it's already added, skip ahead. If you see an "already added" message, that's fine — move on.
-
-## Step 0.5 — ensure the plugin is installed in this session
-
-If the bridge plugin isn't installed yet in this Claude Code session, install it:
-
-```
-/plugin install cowork-to-code-bridge@cowork-bridge-marketplace
+```python
+try:
+    from cowork_to_code_bridge import daemon_alive  # noqa
+    print("client present")
+except ImportError:
+    print("client missing")
 ```
 
-Once installed, this skill is "self-installed" — subsequent sessions will already have it and Steps 0 and 0.5 become no-ops. If the user confirms the plugin is already installed, skip straight to Step 1.
+If it's missing, install it into the sandbox (idempotent, ~5s):
+
+```bash
+pip install --quiet "git+https://github.com/abhinaykrupa/cowork-to-code-bridge.git@main"
+```
+
+Once `from cowork_to_code_bridge import daemon_alive` works, continue to Step 1.
 
 ## Step 1 — probe for existing install
 
@@ -166,4 +170,4 @@ Once `daemon_alive()` returns `True`, tell the user:
 
 ## State preservation
 
-After successful setup, future Cowork sessions in the same project will find the daemon already alive on probe (Step 1) and jump straight to Step 6. No re-onboarding. The marketplace + plugin install (Steps 0 and 0.5) only need to happen once per Claude Code install.
+After successful setup, future Cowork sessions in the same project will find the daemon already alive on probe (Step 1) and jump straight to Step 6. The Mac daemon survives reboots (launchd `KeepAlive`). The only per-session cost is the Step 0 client `pip install`, which is fast and idempotent — if a fresh sandbox doesn't have the client, just reinstall it; the daemon and its token on the Mac are untouched.
