@@ -14,6 +14,26 @@ This bridge fixes that, safely. Once installed, you can say things in Cowork lik
 
 ---
 
+## Where this fits — the full Claude development cycle
+
+The bridge is the missing piece that lets a single Cowork conversation drive a real software project end-to-end. Combined with Claude Code (and its built-in skills like `frontend-design`, `verify`, `code-review`, `security-review`), you get full coverage of the dev cycle without leaving the chat:
+
+| Phase | Who does it | What it looks like |
+|---|---|---|
+| **Design** | Claude Code's `frontend-design` skill, or claude.ai's artifact canvas | Generate React/Tailwind components, iterate visually |
+| **Build** | Claude Code in your editor / Cowork writing files into your project | Edit files, scaffold features, refactor |
+| **Run locally** | **This bridge** — Cowork → Mac shell | Start dev servers, run scripts, hit endpoints |
+| **Test** | **This bridge** running `pytest` / `npm test` / your CI command on your Mac | Real test output streamed back to Cowork |
+| **Review** | Claude Code's `code-review` and `security-review` skills | Catch correctness and security issues on the current diff |
+| **Ship** | **This bridge** running `git push`, `gh pr create`, deploy scripts | Push, open PRs, kick off deploys — all from inside Cowork |
+| **Operate** | **This bridge** running ops scripts (logs, health checks, rollbacks) | Read prod logs, check disk space, restart services |
+
+Before the bridge: Cowork could read and write files in your project, but anything requiring your *machine* — shell, network egress, system state — meant breaking out of Cowork to a terminal. Now the loop closes. One conversation, full cycle.
+
+> The design phase is handled well by Claude Code's `frontend-design` skill directly — no extra plumbing needed there. The bridge is what makes everything *after* design (run, test, ship, operate) reachable from a Cowork session.
+
+---
+
 ## Is this safe?
 
 Yes — by design.
