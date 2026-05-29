@@ -218,21 +218,64 @@ cat > "$BRIDGE_ROOT/scripts/run_claude.sh" <<'RUNCLAUDE'
 # This is what makes the bridge a Cowork -> Claude Code connector.
 # Args: $1 = task/prompt (required), $2 = working dir (optional, default $PWD).
 # Always pass an idempotency_key from Cowork — Claude Code tasks have side effects.
-set -euo pipefail
+#
+# CLI resolution: PATH -> common install dirs -> Desktop app bundle ->
+# auto-install (brew, else official installer) -> clear failure. Auto-install
+# is gated by BRIDGE_CLAUDE_AUTOINSTALL (default 1; set 0 to disable).
+set -uo pipefail
 TASK="${1:?run_claude.sh: a task/prompt is required as the first argument}"
 WORKDIR="${2:-$PWD}"
-CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
-if [[ -z "$CLAUDE_BIN" ]]; then
-  for cand in /opt/homebrew/bin/claude /usr/local/bin/claude; do
-    [[ -x "$cand" ]] && { CLAUDE_BIN="$cand"; break; }
+AUTOINSTALL="${BRIDGE_CLAUDE_AUTOINSTALL:-1}"
+log() { echo "run_claude.sh: $*" >&2; }
+
+find_claude() {
+  local p; p="$(command -v claude 2>/dev/null || true)"
+  if [[ -n "$p" && -x "$p" ]]; then echo "$p"; return 0; fi
+  local cand
+  for cand in /opt/homebrew/bin/claude /usr/local/bin/claude \
+              "$HOME/.local/bin/claude" "$HOME/.claude/bin/claude"; do
+    [[ -x "$cand" ]] && { echo "$cand"; return 0; }
   done
+  local appdir="$HOME/Library/Application Support/Claude/claude-code"
+  if [[ -d "$appdir" ]]; then
+    local b; b="$(find "$appdir" -maxdepth 4 -type f -name claude -perm -u+x 2>/dev/null | sort -V | tail -1)"
+    [[ -n "$b" && -x "$b" ]] && { echo "$b"; return 0; }
+  fi
+  return 1
+}
+
+install_claude() {
+  log "claude CLI not found — attempting on-the-fly install (BRIDGE_CLAUDE_AUTOINSTALL=0 to disable)."
+  if command -v brew >/dev/null 2>&1; then
+    log "installing via: brew install claude-code"
+    brew install claude-code >&2 2>&1 && { hash -r 2>/dev/null||true; return 0; }
+    log "brew install failed — trying official installer."
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    log "installing via official installer (curl)"
+    curl -fsSL https://claude.ai/install.sh | bash >&2 2>&1 && {
+      hash -r 2>/dev/null||true; export PATH="$HOME/.local/bin:$PATH"; return 0; }
+  fi
+  return 1
+}
+
+CLAUDE_BIN="$(find_claude || true)"
+if [[ -z "${CLAUDE_BIN:-}" && "$AUTOINSTALL" == "1" ]] && install_claude; then
+  CLAUDE_BIN="$(find_claude || true)"
 fi
-if [[ -z "$CLAUDE_BIN" ]]; then
-  echo "run_claude.sh: 'claude' CLI not found on this Mac." >&2
+if [[ -z "${CLAUDE_BIN:-}" ]]; then
+  cat >&2 <<MSG
+run_claude.sh: the Claude Code CLI is not installed on this Mac, and it could
+not be installed automatically. Install it once, then retry:
+  brew install claude-code
+  # or:  curl -fsSL https://claude.ai/install.sh | bash
+(Having the Claude Desktop app is NOT enough — the CLI is a separate install.)
+MSG
   exit 127
 fi
-cd "$WORKDIR"
-# To restrict what Cowork-originated tasks can do, edit these flags
+log "using claude at: $CLAUDE_BIN"
+cd "$WORKDIR" || { log "cannot cd to $WORKDIR"; exit 1; }
+# To restrict Cowork-originated tasks, edit these flags
 # (e.g. --permission-mode plan, or --allowedTools "...").
 exec "$CLAUDE_BIN" -p "$TASK" --output-format text
 RUNCLAUDE
