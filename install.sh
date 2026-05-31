@@ -423,6 +423,83 @@ MN
 chmod +x "$BRIDGE_ROOT"/scripts/mac_*.sh
 c_green "  ✓ scripts installed: ping, hello, run_claude, mac_health, mac_ram, mac_disk, mac_top, mac_network"
 
+# ─── 5b. Write the single-file Cowork client into BRIDGE_ROOT ────────────────
+# This is the exact file the Cowork sandbox needs. We keep a copy on the Mac so
+# the DONE message can emit it as a paste block (no network fetch in Cowork ->
+# no egress popups).
+cat > "$BRIDGE_ROOT/bridge_client.py" <<'BRIDGECLIENT'
+"""bridge_client.py — single-file, stdlib-only Cowork client for cowork-to-code-bridge."""
+from __future__ import annotations
+import json, os, time, uuid
+from pathlib import Path
+from typing import Any
+__version__ = "0.3.0"
+
+def _resolve_bridge_root() -> Path:
+    env = os.environ.get("BRIDGE_ROOT")
+    if env:
+        return Path(env)
+    cwd_bridge = Path.cwd() / "bridge"
+    return cwd_bridge
+
+def _load_token(bridge_root: Path):
+    env_tok = os.environ.get("BRIDGE_TOKEN")
+    if env_tok:
+        return env_tok
+    env_file = bridge_root / ".env"
+    if not env_file.exists():
+        return None
+    for line in env_file.read_text().splitlines():
+        if line.strip().startswith("BRIDGE_TOKEN"):
+            _, _, v = line.partition("=")
+            return v.strip().strip('"').strip("'") or None
+    return None
+
+def call_remote(script, args=None, timeout=60, poll_interval=1.0, cwd=None,
+                env=None, bridge_root=None, idempotency_key=None) -> dict[str, Any]:
+    root = Path(bridge_root) if bridge_root else _resolve_bridge_root()
+    queue = root / "queue"; results = root / "results"
+    queue.mkdir(parents=True, exist_ok=True); results.mkdir(parents=True, exist_ok=True)
+    cmd_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    payload: dict[str, Any] = {"id": cmd_id, "script": script, "args": args or [],
+                               "timeout": timeout, "ts_submitted": time.time()}
+    if cwd: payload["cwd"] = cwd
+    if env: payload["env"] = env
+    if idempotency_key: payload["idempotency_key"] = idempotency_key
+    token = _load_token(root)
+    if token: payload["token"] = token
+    cmd_file = queue / f"{cmd_id}.json"
+    tmp = cmd_file.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload)); tmp.rename(cmd_file)
+    result_file = results / f"{cmd_id}.json"
+    deadline = time.time() + timeout + 5
+    while time.time() < deadline:
+        if result_file.exists():
+            try:
+                return json.loads(result_file.read_text())
+            except json.JSONDecodeError:
+                time.sleep(poll_interval); continue
+        time.sleep(poll_interval)
+    raise TimeoutError(f"bridge: no result for {cmd_id} within {timeout + 5}s. "
+                       f"Check that the daemon is running and BRIDGE_ROOT matches the Mac's .env.")
+
+def daemon_alive(bridge_root=None, ping_timeout=10) -> bool:
+    try:
+        r = call_remote("scripts/ping.sh", args=[], timeout=ping_timeout, bridge_root=bridge_root)
+        return r.get("exit_code") == 0
+    except TimeoutError:
+        return False
+
+if __name__ == "__main__":
+    alive = daemon_alive(ping_timeout=10)
+    print("BRIDGE LIVE" if alive else "DAEMON NOT REACHABLE")
+    raise SystemExit(0 if alive else 1)
+BRIDGECLIENT
+c_green "  ✓ Cowork client written to $BRIDGE_ROOT/bridge_client.py"
+
+# Build the base64 of the client for the zero-fetch Cowork paste block.
+CLIENT_B64="$(base64 < "$BRIDGE_ROOT/bridge_client.py" | tr -d '\n')"
+
 # ─── 6. launchd plist ────────────────────────────────────────────────────────
 step "Installing launchd agent (auto-start on login)"
 
@@ -564,25 +641,39 @@ else
   fi
 fi
 
-# ─── 9. Print Cowork paste snippet ───────────────────────────────────────────
+# ─── 9. Print the zero-fetch Cowork paste block ──────────────────────────────
 step "DONE. Bridge is installed and running."
 
+# The block below writes bridge_client.py INSIDE the Cowork sandbox by decoding
+# an embedded base64 copy — so Cowork never fetches anything from the network,
+# which means NO egress permission popups. BRIDGE_ROOT is baked in.
 cat <<DONE
 
-$(c_green "✓ Your Mac side is ready. Now go back to your Cowork chat and say:")
+$(c_green "✓ Your Mac is ready. ONE more paste — and NO popups this time.")
 
-  done
+Copy EVERYTHING between the lines below and paste it into your Cowork chat.
+It sets up the connection without downloading anything (that's what was
+causing the "allow access" popups before).
 
-Cowork will detect that this daemon is running and confirm the
-connection. After that you can ask it to run things on your Mac in
-plain English — no further setup.
+────────────────────────── COPY FROM HERE ──────────────────────────
+Run this Python in the sandbox to connect to my Mac (no download needed):
 
-(If you came here on your own without starting in Cowork: open any
-Cowork chat and paste this one line, then follow what it says —
-  Set up my Mac bridge using https://github.com/$REPO — follow its SETUP.md
-)
+import base64, os
+os.environ["BRIDGE_ROOT"] = "$BRIDGE_ROOT"
+open("bridge_client.py","w").write(base64.b64decode("$CLIENT_B64").decode())
+from bridge_client import daemon_alive
+print("BRIDGE LIVE — my Mac is connected" if daemon_alive(ping_timeout=12) else "DAEMON NOT REACHABLE")
 
-Bridge folder (Cowork may ask for this): $BRIDGE_ROOT
+Then, once it prints BRIDGE LIVE, you can run things on my Mac. To hand a
+task to Claude Code on my Mac, use:
+  from bridge_client import call_remote
+  call_remote("scripts/run_claude.sh", args=["<task>", "<workdir>"], timeout=600, idempotency_key="<unique-key>")
+─────────────────────────── TO HERE ────────────────────────────────
+
+(That's it — no other setup. The paste above contains the whole client,
+so Cowork won't ask to download anything.)
+
+Bridge folder: $BRIDGE_ROOT
 
 Manual verification (optional):
   launchctl print gui/$UID_NUM/$LABEL   # full agent state

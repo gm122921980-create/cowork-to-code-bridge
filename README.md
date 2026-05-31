@@ -50,27 +50,25 @@ You can [uninstall it completely with one command](#uninstall) at any time.
 
 ---
 
-## Install (about 2 minutes)
+## Install (about 2 minutes) — start on your Mac
 
-**You only paste one thing to start.** Copy the line below and paste it into any Claude Cowork chat:
+This flow is **Mac-first on purpose**: it avoids the "allow network access" popups that Cowork shows when it has to download things. You run one command on your Mac, and it hands you a ready-to-paste block for Cowork that downloads nothing.
 
+### Step 1 — On your Mac (one time)
+
+Open your Terminal app (press `Cmd + Space`, type **Terminal**, hit Enter), paste this one line, and press Enter:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/abhinaykrupa/cowork-to-code-bridge/main/install.sh | bash
 ```
-Set up my Mac bridge using https://github.com/abhinaykrupa/cowork-to-code-bridge — follow its SETUP.md
-```
 
-That's the whole start. Claude reads the setup guide, installs what it needs inside Cowork, and then **walks you through the one remaining step on your Mac** (it'll tell you exactly where to click and what to paste — about 30 seconds, one time). When it's done, Claude confirms your Mac is connected and you can start asking it to run things.
+Wait ~30 seconds. When it finishes, it prints a **"COPY FROM HERE … TO HERE"** block. That block already contains everything Cowork needs.
 
-> **No plugins, no `/plugin` command, no second setup.** `/plugin` doesn't work inside Cowork, so this doesn't use it. Just the one paste above; Claude drives the rest.
+### Step 2 — In Cowork
 
-### What Claude will have you do (so there are no surprises)
+Paste that block (the bit between the lines) into any Claude Cowork chat. It connects to your Mac and prints **`BRIDGE LIVE`**. Done.
 
-1. **In Cowork** — Claude installs a small helper and checks if your Mac is already connected. If it is, you're instantly done.
-2. **On your Mac (one time only)** — if it's not connected yet, Claude will say: *open the Terminal app, paste this one line, press Enter, wait ~30 seconds.* The line is:
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/abhinaykrupa/cowork-to-code-bridge/main/install.sh | bash
-   ```
-   You don't need to understand it — Claude tells you exactly what to do and confirms when it worked.
-3. **Back in Cowork** — say "done." Claude verifies the connection and tells you what you can ask for.
+> **Why this is popup-free:** the pasted block *contains* the small connector code, so Cowork writes it locally instead of downloading it. No download = no "allow access" popup. (The older "paste a URL into Cowork first" flow still works but makes Cowork fetch files, which triggers those popups — so prefer Mac-first.)
 
 After this, **every future Cowork session connects automatically** — no terminal, no re-setup.
 

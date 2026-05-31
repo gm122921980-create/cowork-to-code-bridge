@@ -123,6 +123,16 @@ whatever fetch tool you have, then write the file. Tell the user up front:
 just one small file." **Fetch only this single file — do not fetch the package
 modules individually (that causes a popup per file).**
 
+> **Best path = no popups at all (Mac-first).** Fetching anything in the Cowork
+> sandbox triggers a network-permission popup. To avoid ALL popups, prefer the
+> Mac-first flow: have the user run the installer on their Mac FIRST
+> (`curl -fsSL .../install.sh | bash`). When it finishes it prints a
+> "COPY FROM HERE … TO HERE" block that already CONTAINS the client (base64) and
+> the probe. The user pastes that block here; you run it; it writes
+> `bridge_client.py` locally and connects — zero fetches, zero popups. If the
+> user has already run the installer, ask them to paste that block instead of
+> fetching the URL above.
+
 ## Step 2 — probe for a live daemon
 
 ```python
