@@ -80,6 +80,13 @@ elif [[ -d "$BRIDGE_ROOT" ]]; then
   fi
 fi
 
-echo "✓ daemon + plist removed."
+# Remove the global Cowork skill so it stops loading into sessions.
+SKILL_DIR="$HOME/.claude/skills/cowork-to-code-bridge"
+if [[ -d "$SKILL_DIR" ]]; then
+  rm -rf "$SKILL_DIR"
+  echo "✓ removed global skill $SKILL_DIR"
+fi
+
+echo "✓ daemon + plist + skill removed."
 echo "  Package was not on PATH so nothing to pip-uninstall. If you did install it via pip,"
 echo "  remove it with: python3 -m pip uninstall cowork-to-code-bridge"

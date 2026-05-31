@@ -497,8 +497,68 @@ if __name__ == "__main__":
 BRIDGECLIENT
 c_green "  ✓ Cowork client written to $BRIDGE_ROOT/bridge_client.py"
 
-# Build the base64 of the client for the zero-fetch Cowork paste block.
-CLIENT_B64="$(base64 < "$BRIDGE_ROOT/bridge_client.py" | tr -d '\n')"
+# ─── 5c. Install the GLOBAL Cowork skill (~/.claude/skills) ──────────────────
+# This is what makes the bridge work in EVERY Cowork session, every project,
+# with zero fetch / zero paste / zero popups: a skill in ~/.claude/skills auto-
+# loads into all sessions. We drop the SKILL.md + the client + a tiny config
+# pointing at BRIDGE_ROOT. No /plugin, no marketplace.
+step "Installing the global Cowork skill"
+SKILLS_DIR="$HOME/.claude/skills/cowork-to-code-bridge"
+mkdir -p "$SKILLS_DIR"
+# The client (same single file) lives next to the skill so Cowork can import it.
+cp "$BRIDGE_ROOT/bridge_client.py" "$SKILLS_DIR/bridge_client.py"
+# Config so the skill knows BRIDGE_ROOT without the user pasting a path.
+printf '{ "BRIDGE_ROOT": "%s" }\n' "$BRIDGE_ROOT" > "$SKILLS_DIR/bridge_env.json"
+
+cat > "$SKILLS_DIR/SKILL.md" <<SKILLMD
+---
+name: cowork-to-code-bridge
+description: Connects Claude Cowork to Claude Code running on the user's Mac, so the whole machine is reachable from a Cowork chat. Use this skill whenever the user asks to do something that needs their actual Mac and can't be done in the Cowork sandbox — building or running an app, running tests, git push/pull, installing packages, npm/pip/brew/docker, checking the Mac's health/RAM/disk/processes, or any task they describe as "on my Mac". Also triggers on "build me an app", "run this on my Mac", "use Claude Code on my machine", "connect to my Mac", "check my Mac". The bridge hands the task to a real Claude Code agent on the Mac; it is idempotent and survives reboots.
+---
+
+# cowork-to-code-bridge
+
+You are in a Cowork sandbox. This skill reaches **Claude Code on the user's Mac**
+through a local daemon. The client (\`bridge_client.py\`) is already installed next
+to this file. Do NOT fetch/download anything; do NOT use \`/plugin\`.
+
+## Step 1 — connect (always first)
+
+\`\`\`python
+import os, sys, json
+SKILL_DIR = os.path.expanduser("~/.claude/skills/cowork-to-code-bridge")
+sys.path.insert(0, SKILL_DIR)
+cfg = os.path.join(SKILL_DIR, "bridge_env.json")
+if os.path.exists(cfg):
+    os.environ.setdefault("BRIDGE_ROOT", json.load(open(cfg)).get("BRIDGE_ROOT", ""))
+from bridge_client import daemon_alive, call_remote
+print("BRIDGE LIVE" if daemon_alive(ping_timeout=10) else "DAEMON NOT REACHABLE")
+\`\`\`
+
+If DAEMON NOT REACHABLE, the Mac side isn't set up: tell the user to run, once,
+in their Mac Terminal — \`curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash\`
+— then retry. (macOS only.)
+
+## Step 2 — hand a task to Claude Code (main use)
+
+\`\`\`python
+r = call_remote("scripts/run_claude.sh",
+    args=["Build a Flask app with a /health route, install deps, run it", "/Users/<them>/projects/app"],
+    timeout=600, idempotency_key="unique-key-per-task")
+print(r["exit_code"]); print(r["stdout"])
+\`\`\`
+Always pass a unique \`idempotency_key\` — Claude Code tasks have side effects, so a
+retry must not run twice.
+
+## Step 3 — quick system checks (no agent)
+\`call_remote("scripts/mac_health.sh")\` · \`mac_ram.sh\` · \`mac_disk.sh\` · \`mac_top.sh\` · \`mac_network.sh\`
+
+## Results
+Dict with exit_code/stdout/stderr. Codes: -1 refused, -2 timeout, -3 internal,
+-4 crashed-midrun (indeterminate, not retried). \`idempotent_replay: True\` = cached.
+Be brief with the user; never claim success without exit_code 0 / BRIDGE LIVE.
+SKILLMD
+c_green "  ✓ global skill installed at $SKILLS_DIR (loads in every Cowork session)"
 
 # ─── 6. launchd plist ────────────────────────────────────────────────────────
 step "Installing launchd agent (auto-start on login)"
@@ -641,39 +701,28 @@ else
   fi
 fi
 
-# ─── 9. Print the zero-fetch Cowork paste block ──────────────────────────────
+# ─── 9. Done ─────────────────────────────────────────────────────────────────
 step "DONE. Bridge is installed and running."
 
-# The block below writes bridge_client.py INSIDE the Cowork sandbox by decoding
-# an embedded base64 copy — so Cowork never fetches anything from the network,
-# which means NO egress permission popups. BRIDGE_ROOT is baked in.
 cat <<DONE
 
-$(c_green "✓ Your Mac is ready. ONE more paste — and NO popups this time.")
+$(c_green "✓ All set. You don't need to install anything in Cowork.")
 
-Copy EVERYTHING between the lines below and paste it into your Cowork chat.
-It sets up the connection without downloading anything (that's what was
-causing the "allow access" popups before).
+The connection is now available in EVERY Claude Cowork chat automatically —
+including new chats, new projects, and after you restart your Mac. There are
+no downloads and no "allow access" popups.
 
-────────────────────────── COPY FROM HERE ──────────────────────────
-Run this Python in the sandbox to connect to my Mac (no download needed):
+Just open any Cowork chat and ask in plain English, e.g.:
 
-import base64, os
-os.environ["BRIDGE_ROOT"] = "$BRIDGE_ROOT"
-open("bridge_client.py","w").write(base64.b64decode("$CLIENT_B64").decode())
-from bridge_client import daemon_alive
-print("BRIDGE LIVE — my Mac is connected" if daemon_alive(ping_timeout=12) else "DAEMON NOT REACHABLE")
+  • "build me a small web app on my Mac"
+  • "run my tests and fix what's failing"
+  • "check my Mac's health"
+  • "git push my project"
 
-Then, once it prints BRIDGE LIVE, you can run things on my Mac. To hand a
-task to Claude Code on my Mac, use:
-  from bridge_client import call_remote
-  call_remote("scripts/run_claude.sh", args=["<task>", "<workdir>"], timeout=600, idempotency_key="<unique-key>")
-─────────────────────────── TO HERE ────────────────────────────────
-
-(That's it — no other setup. The paste above contains the whole client,
-so Cowork won't ask to download anything.)
+Claude will hand the work to Claude Code on this Mac and bring back the result.
 
 Bridge folder: $BRIDGE_ROOT
+Skill folder:  $HOME/.claude/skills/cowork-to-code-bridge
 
 Manual verification (optional):
   launchctl print gui/$UID_NUM/$LABEL   # full agent state

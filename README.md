@@ -50,53 +50,36 @@ You can [uninstall it completely with one command](#uninstall) at any time.
 
 ---
 
-## Install (about 2 minutes) — start on your Mac
+## Install — one command, once
 
-This flow is **Mac-first on purpose**: it avoids the "allow network access" popups that Cowork shows when it has to download things. You run one command on your Mac, and it hands you a ready-to-paste block for Cowork that downloads nothing.
-
-### Step 1 — On your Mac (one time)
-
-Open your Terminal app (press `Cmd + Space`, type **Terminal**, hit Enter), paste this one line, and press Enter:
+There is exactly **one step**. On your Mac, open Terminal (press `Cmd + Space`, type **Terminal**, hit Enter), paste this line, and press Enter:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/abhinaykrupa/cowork-to-code-bridge/main/install.sh | bash
 ```
 
-Wait ~30 seconds. When it finishes, it prints a **"COPY FROM HERE … TO HERE"** block. That block already contains everything Cowork needs.
+Wait ~30 seconds. That's it. The installer:
+- starts a small background helper on your Mac (auto-restarts on login, survives reboots),
+- installs a Claude **skill** so the connection is available in **every** Cowork chat automatically.
 
-### Step 2 — In Cowork
+**Now just use it.** Open any Claude Cowork chat — new chat, any project, even after a reboot — and ask in plain English:
 
-Paste that block (the bit between the lines) into any Claude Cowork chat. It connects to your Mac and prints **`BRIDGE LIVE`**. Done.
+> *"build me a small web app on my Mac"* · *"run my tests and fix what fails"* · *"check my Mac's health"* · *"git push my project"*
 
-> **Why this is popup-free:** the pasted block *contains* the small connector code, so Cowork writes it locally instead of downloading it. No download = no "allow access" popup. (The older "paste a URL into Cowork first" flow still works but makes Cowork fetch files, which triggers those popups — so prefer Mac-first.)
+Claude hands the work to Claude Code on your Mac and brings back the result.
 
-After this, **every future Cowork session connects automatically** — no terminal, no re-setup.
+> **No second step. No downloads in Cowork. No popups. No `/plugin`.** Because the connector ships as a globally-installed skill, Cowork already has it before you say a word — nothing to fetch or paste. (This is why earlier "paste a URL into Cowork" flows are gone — they caused the network-permission popups.)
 
-> **Don't have Python 3.10+ on your Mac?** The installer handles it: if it finds only Apple's old stock Python (3.8), it installs a modern one for you (via Homebrew, installing Homebrew first if needed). This part can take a few minutes and may ask for your Mac password — that's normal. To skip the auto-install and just get manual steps instead, run the installer with `BRIDGE_PYTHON_AUTOINSTALL=0`.
+> **Don't have Python 3.10+?** The installer handles it: if it finds only Apple's stock Python (3.8), it installs a modern one for you (via Homebrew, installing Homebrew first if needed). That part can take a few minutes and may ask for your Mac password — that's normal. Skip it with `BRIDGE_PYTHON_AUTOINSTALL=0`.
 
 <details>
-<summary>Doing it manually (for developers)</summary>
+<summary>What the installer puts where (for the curious / developers)</summary>
 
-The Cowork paste-line just tells Claude to follow [`SETUP.md`](./SETUP.md). You can do the same steps by hand:
+- **Daemon** → runs from `~/.cowork-to-code-bridge/`, managed by launchd (auto-start, reboot-safe).
+- **Global skill** → `~/.claude/skills/cowork-to-code-bridge/` (SKILL.md + `bridge_client.py` + a `bridge_env.json` pointing at `BRIDGE_ROOT`). This is what loads into every Cowork session.
+- **Whitelisted scripts** → `~/.cowork-to-code-bridge/scripts/` (`run_claude.sh`, `mac_health.sh`, …).
 
-1. **On your Mac**, run the installer (starts the daemon, survives reboots):
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/abhinaykrupa/cowork-to-code-bridge/main/install.sh | bash
-   ```
-2. **In the Cowork sandbox**, fetch the single-file client (the sandbox blocks outbound network, so **don't** `pip install` — just grab one file):
-   ```bash
-   # fetch this ONE url and save it as bridge_client.py (one network-permission popup):
-   # https://raw.githubusercontent.com/abhinaykrupa/cowork-to-code-bridge/main/bridge_client.py
-   BRIDGE_ROOT="/Users/you/.cowork-to-code-bridge" python bridge_client.py   # prints BRIDGE LIVE / DAEMON NOT REACHABLE
-   ```
-   - `BRIDGE LIVE` → done.
-   - `DAEMON NOT REACHABLE` → set `BRIDGE_ROOT` to the path printed in your Mac's `~/.cowork-to-code-bridge/.env` (as above), then re-run. Or in Python:
-     ```python
-     import os
-     os.environ["BRIDGE_ROOT"] = "/Users/you/.cowork-to-code-bridge"  # from your Mac's .env
-     from bridge_client import daemon_alive
-     print(daemon_alive(ping_timeout=10))
-     ```
+The Cowork side imports the colocated `bridge_client.py` — pure stdlib, no pip, no network fetch. To verify by hand from a Cowork session: `from bridge_client import daemon_alive; print(daemon_alive())` (the skill sets `BRIDGE_ROOT` for you via `bridge_env.json`).
 </details>
 
 ---

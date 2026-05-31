@@ -1,7 +1,7 @@
 {
   "name": "cowork-to-code-bridge",
-  "version": "0.3.0",
-  "description": "Connect Claude Cowork to Claude Code on your Mac (macOS only). Cowork hands a task to a local Claude Code agent (and can run approved scripts too); the bridge is idempotent and token-protected. After installing, say 'set up my Mac bridge' in Cowork and the setup skill walks you through the rest.",
+  "version": "0.4.0",
+  "description": "Connect Claude Cowork to Claude Code on your Mac (macOS only). Cowork hands a task to a local Claude Code agent (and can run approved scripts too); the bridge is idempotent and token-protected. Install with one Mac command; it sets up a global Cowork skill so every session connects automatically — no /plugin, no setup inside Cowork.",
   "author": {
     "name": "Abhi Gadikoppula",
     "url": "https://github.com/abhinaykrupa"
@@ -9,5 +9,5 @@
   "homepage": "https://github.com/abhinaykrupa/cowork-to-code-bridge",
   "repository": "https://github.com/abhinaykrupa/cowork-to-code-bridge",
   "license": "MIT",
-  "skills": ["./skills/"]
+  "skills": ["./skill/"]
 }
