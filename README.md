@@ -1,5 +1,12 @@
 # cowork-to-code-bridge
 
+[![CI](https://github.com/abhinaykrupa/cowork-to-code-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/abhinaykrupa/cowork-to-code-bridge/actions/workflows/ci.yml)
+[![Stars](https://img.shields.io/github/stars/abhinaykrupa/cowork-to-code-bridge?style=flat&logo=github)](https://github.com/abhinaykrupa/cowork-to-code-bridge/stargazers)
+[![Release](https://img.shields.io/github/v/release/abhinaykrupa/cowork-to-code-bridge?display_name=tag)](https://github.com/abhinaykrupa/cowork-to-code-bridge/releases)
+[![Downloads](https://img.shields.io/github/downloads/abhinaykrupa/cowork-to-code-bridge/total?logo=github)](https://github.com/abhinaykrupa/cowork-to-code-bridge/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](#)
+
 **Let Claude run code on your real machine — safely — from any Claude chat.**
 
 > 🖥️ **macOS & Linux.** Works on your Mac (launchd) or a Linux box/server (systemd). Windows isn't supported yet.
