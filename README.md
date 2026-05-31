@@ -101,25 +101,27 @@ You can [uninstall it completely with one command](#uninstall) at any time.
 
 ---
 
-## Install — one command, once
+## Install — two pastes total
 
-There is exactly **one step**. On your Mac, open Terminal (press `Cmd + Space`, type **Terminal**, hit Enter), paste this line, and press Enter:
+**Step 1 — on your machine (once).** Open Terminal (`Cmd + Space` → **Terminal**), paste this, press Enter:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/abhinaykrupa/cowork-to-code-bridge/main/install.sh | bash
 ```
 
-Wait ~30 seconds. That's it. The installer:
-- starts a small background helper on your Mac (auto-restarts on login, survives reboots),
-- installs a Claude **skill** so the connection is available in **every** Cowork chat automatically.
+Wait ~30 seconds. It installs a small background helper (auto-restarts, reboot-safe) and a Claude skill. When it finishes it prints a **connect line** — copy it.
 
-**Now just use it.** Open any Claude Cowork chat — new chat, any project, even after a reboot — and ask in plain English:
+**Step 2 — in Cowork (once per chat).** Paste that connect line into any Claude Cowork chat. It looks like:
 
-> *"build me a small web app on my Mac"* · *"run my tests and fix what fails"* · *"check my Mac's health"* · *"git push my project"*
+> *Connect to my machine via the cowork-to-code bridge at `/Users/you/.cowork-to-code-bridge` — mount that folder, read its CLAUDE.md, and confirm the bridge is live.*
 
-Claude hands the work to Claude Code on your Mac and brings back the result.
+Claude asks for permission to see that folder (**approve it**), reads the instructions inside, and confirms **`BRIDGE LIVE`**. Now, in that chat, just talk:
 
-> **No second step. No downloads in Cowork. No popups. No `/plugin`.** Because the connector ships as a globally-installed skill, Cowork already has it before you say a word — nothing to fetch or paste. (This is why earlier "paste a URL into Cowork" flows are gone — they caused the network-permission popups.)
+> *"build me a small web app on my machine"* · *"run my tests and fix what fails"* · *"check my machine's health"* · *"git push my project"*
+
+Claude hands the work to Claude Code on your machine and brings the result back.
+
+> **Why the second paste?** Cowork's sandbox can't see your machine until you grant it access to the bridge folder — that's a one-time permission per chat, and the connect line is what triggers it. No downloads, no `/plugin`, no popups beyond that single folder-access approval. (Once a chat is connected it stays connected; a brand-new chat needs the line again.)
 
 > **Don't have Python 3.10+?** The installer handles it: if it finds only Apple's stock Python (3.8), it installs a modern one for you (via Homebrew, installing Homebrew first if needed). That part can take a few minutes and may ask for your Mac password — that's normal. Skip it with `BRIDGE_PYTHON_AUTOINSTALL=0`.
 

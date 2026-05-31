@@ -28,6 +28,14 @@ from bridge_client import daemon_alive, call_remote
 print("BRIDGE LIVE" if daemon_alive(ping_timeout=10) else "DAEMON NOT REACHABLE")
 ```
 
+**If the import fails or the path isn't visible** (e.g. `bridge_client` not found,
+or `~/.cowork-to-code-bridge` doesn't exist in your sandbox): the bridge folder
+isn't mounted into this session yet. **Request access to the folder**
+`~/.cowork-to-code-bridge` (the same way you'd request any directory mount), then
+read the `CLAUDE.md` inside it and re-run the connect snippet. This is the most
+common first-time blocker — the user's machine is set up, but Cowork just needs
+permission to see the folder.
+
 - **BRIDGE LIVE** → the Mac is connected. Proceed.
 - **DAEMON NOT REACHABLE** → the Mac side isn't set up (or the daemon is down).
   Tell the user, in plain language, to run **one** command in their Mac's

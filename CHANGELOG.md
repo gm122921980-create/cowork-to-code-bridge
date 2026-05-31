@@ -6,6 +6,18 @@ All notable changes to this project. Format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+- **Streamlined the Cowork connection (the real first-run gap).** A live session
+  on a fresh machine couldn't auto-connect: Cowork's sandbox doesn't mount the
+  bridge folder by default, and the agent had to be walked through it manually.
+  Now: (1) the installer writes a `CLAUDE.md` into `BRIDGE_ROOT` so the bridge is
+  self-documenting once mounted; (2) the installer's DONE message prints a single
+  copy-paste **connect line** for Cowork (asks Claude to mount the folder, read
+  the note, confirm `BRIDGE LIVE`) instead of falsely promising "automatic, no
+  second step"; (3) the skill now tells the agent to *request the folder mount*
+  when it can't see the bridge. Net: install = 1 paste on the machine + 1 paste
+  in Cowork (once per chat).
+
 ### Added
 - `port_check.sh` starter script for checking which process is listening on a
   TCP port, plus installer and skill documentation wiring.

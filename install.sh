@@ -592,6 +592,47 @@ Be brief with the user; never claim success without exit_code 0 / BRIDGE LIVE.
 SKILLMD
 c_green "  ✓ global skill installed at $SKILLS_DIR (loads in every Cowork session)"
 
+# ─── 5d. Drop a CLAUDE.md INTO the bridge folder ─────────────────────────────
+# When a Cowork session mounts BRIDGE_ROOT, this note tells the agent exactly
+# how to use the bridge — so the connection is self-documenting after the mount.
+cat > "$BRIDGE_ROOT/CLAUDE.md" <<CLAUDEMD
+# cowork-to-code-bridge — you are connected to the user's machine
+
+If you can read this file, the bridge folder ($BRIDGE_ROOT) is mounted into your
+sandbox. That means you can run things on the user's real machine (macOS/Linux)
+through this bridge. Use it for anything the sandbox can't do: builds, tests,
+git, installs, system checks, or handing a task to Claude Code.
+
+## Connect (do this first)
+
+\`\`\`python
+import sys, os, json
+sys.path.insert(0, "$SKILLS_DIR")
+os.environ.setdefault("BRIDGE_ROOT", "$BRIDGE_ROOT")
+from bridge_client import daemon_alive, call_remote, call_remote_streaming
+print("BRIDGE LIVE" if daemon_alive(ping_timeout=10) else "DAEMON NOT REACHABLE")
+\`\`\`
+
+(If \`bridge_client.py\` isn't importable, it's also at \`$BRIDGE_ROOT/bridge_client.py\` —
+add that dir to sys.path instead.)
+
+## Hand a task to Claude Code on the machine
+\`\`\`python
+r = call_remote("scripts/run_claude.sh",
+    args=["<your task>", "<working dir>"], timeout=600, idempotency_key="<unique>")
+print(r["exit_code"]); print(r["stdout"])
+\`\`\`
+Always pass a unique idempotency_key (tasks have side effects). For long builds,
+use call_remote_streaming(..., on_progress=cb).
+
+## Quick checks (no agent)
+scripts/mac_health.sh · mac_ram.sh · mac_disk.sh · mac_top.sh · mac_network.sh · port_check.sh <port>
+
+Results: dict with exit_code/stdout/stderr (-1 refused, -2 timeout, -3 internal,
+-4 crashed). Never claim success without exit_code 0 / BRIDGE LIVE.
+CLAUDEMD
+c_green "  ✓ wrote $BRIDGE_ROOT/CLAUDE.md (self-documents the bridge once mounted)"
+
 # ─── 6. Install + start the daemon as a per-user service ─────────────────────
 step "Installing background service ($SERVICE_MGR, auto-start + reboot-safe)"
 
@@ -789,20 +830,23 @@ fi
 
 cat <<DONE
 
-$(c_green "✓ All set. You don't need to install anything in Cowork.")
+$(c_green "✓ Your machine side is installed and running.")
 
-The connection is now available in EVERY Claude Cowork chat automatically —
-including new chats, new projects, and after you restart your computer. There
-are no downloads and no "allow access" popups.
+ONE more step, in Cowork — paste this line into any Claude Cowork chat to
+connect (Cowork needs permission to see the bridge folder; this asks for it):
 
-Just open any Cowork chat and ask in plain English, e.g.:
+$(c_green "  Connect to my machine via the cowork-to-code bridge at $BRIDGE_ROOT — mount that folder, read its CLAUDE.md, and confirm the bridge is live.")
+
+Claude will request access to that folder (approve it), read the instructions
+inside, and confirm "BRIDGE LIVE". After that, in THAT chat you can just say:
 
   • "build me a small web app on my machine"
   • "run my tests and fix what's failing"
-  • "check my machine's health"
-  • "git push my project"
+  • "check my machine's health"   • "git push my project"
 
-Claude will hand the work to Claude Code on this machine and bring back the result.
+…and Claude hands the work to Claude Code on this machine and brings back the
+result. (You only paste the connect line once per chat. If a chat doesn't see
+the bridge, paste it again — that's the cue for Claude to request the mount.)
 
 Bridge folder: $BRIDGE_ROOT
 Skill folder:  $HOME/.claude/skills/cowork-to-code-bridge
