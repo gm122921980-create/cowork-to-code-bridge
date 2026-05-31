@@ -40,6 +40,7 @@ Start:
 from __future__ import annotations
 
 import contextlib
+import hmac
 import json
 import os
 import re
@@ -66,6 +67,8 @@ POLL_SEC = float(os.environ.get("BRIDGE_POLL_SEC", "1.0"))
 MAX_TIMEOUT_SEC = int(os.environ.get("BRIDGE_MAX_TIMEOUT", "600"))
 ALLOW_UNAUTH = os.environ.get("BRIDGE_ALLOW_UNAUTH") == "1"
 JOURNAL_WARN_BYTES = 10 * 1024 * 1024  # warn at 10 MB
+JOURNAL_ROTATE_BYTES = 50 * 1024 * 1024  # rotate at 50 MB (keep one .old)
+MAX_CMD_BYTES = 1 * 1024 * 1024  # reject command files larger than 1 MB (DoS guard)
 
 # Allow only relative paths inside scripts/, ending in .sh or .py.
 SAFE_NAME = re.compile(r"^scripts/[A-Za-z0-9_/.-]+\.(sh|py)$")
@@ -313,6 +316,17 @@ def _run_streaming(argv: list[str], cwd: str, env: dict[str, str],
 def run_one(cmd_path: Path, token_required: str | None,
             terminal: dict[str, str], idem_cache: dict[str, dict]) -> None:
     cmd_id = cmd_path.stem
+    # Size guard: refuse to slurp an oversized command file into memory.
+    try:
+        if cmd_path.stat().st_size > MAX_CMD_BYTES:
+            write_result(cmd_id, {"exit_code": -1,
+                                  "error": f"command file too large (> {MAX_CMD_BYTES} bytes)"})
+            log(f"  ✗ {cmd_id}: oversized command file, rejected")
+            cmd_path.rename(PROCESSED / cmd_path.name)
+            return
+    except OSError:
+        cmd_path.unlink(missing_ok=True)
+        return
     try:
         cmd = json.loads(cmd_path.read_text())
     except Exception as e:
@@ -320,12 +334,14 @@ def run_one(cmd_path: Path, token_required: str | None,
         cmd_path.unlink(missing_ok=True)
         return
 
-    # ─── auth ─────────────────────────────────────────────────────────────────
-    if token_required and cmd.get("token") != token_required:
-        write_result(cmd_id, {"exit_code": -1, "error": "bridge token mismatch"})
-        log(f"  ✗ {cmd_id}: token mismatch")
-        cmd_path.rename(PROCESSED / cmd_path.name)
-        return
+    # ─── auth (constant-time compare to avoid token timing leaks) ──────────────
+    if token_required:
+        supplied = cmd.get("token")
+        if not isinstance(supplied, str) or not hmac.compare_digest(supplied, token_required):
+            write_result(cmd_id, {"exit_code": -1, "error": "bridge token mismatch"})
+            log(f"  ✗ {cmd_id}: token mismatch")
+            cmd_path.rename(PROCESSED / cmd_path.name)
+            return
 
     # ─── journal: received ────────────────────────────────────────────────────
     idem_key = cmd.get("idempotency_key")
@@ -432,6 +448,18 @@ def main() -> int:
     for d in (BRIDGE_ROOT, QUEUE, RESULTS, PROCESSED, INFLIGHT, PROGRESS, SCRIPTS_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
+    # Harden directory perms: only the owner should be able to read the token,
+    # write into the queue, or drop scripts. World/group-writable here would let
+    # any local user inject commands or scripts. Tighten + warn if loose.
+    for d in (BRIDGE_ROOT, QUEUE, SCRIPTS_DIR):
+        try:
+            mode = d.stat().st_mode & 0o777
+            if mode & 0o077:  # any group/other bits set
+                os.chmod(d, 0o700)
+                log(f"   tightened perms on {d} (was {oct(mode)} → 0o700)")
+        except OSError:
+            pass
+
     env = load_env()
     token = env.get("BRIDGE_TOKEN") or None
     if not token:
@@ -455,11 +483,20 @@ def main() -> int:
     _recover_inflight(terminal)
     _drain_stale_queue(terminal)
 
-    # Soft warning if the journal is getting big — until we add rotation.
+    # Journal hygiene: rotate when very large (keep one .old), else warn.
+    # Rotation happens AFTER replay above, so the in-memory idempotency cache and
+    # terminal state for this run are already loaded from the full history.
     try:
-        if JOURNAL.exists() and JOURNAL.stat().st_size > JOURNAL_WARN_BYTES:
-            log(f"!! journal.log is {JOURNAL.stat().st_size // 1024} KB — "
-                f"consider archiving it (rotation lands in a future version).")
+        if JOURNAL.exists():
+            size = JOURNAL.stat().st_size
+            if size > JOURNAL_ROTATE_BYTES:
+                old = JOURNAL.with_suffix(".log.old")
+                old.unlink(missing_ok=True)
+                JOURNAL.rename(old)
+                log(f"   rotated journal.log ({size // 1024 // 1024} MB) → {old.name}")
+            elif size > JOURNAL_WARN_BYTES:
+                log(f"!! journal.log is {size // 1024} KB — will auto-rotate at "
+                    f"{JOURNAL_ROTATE_BYTES // 1024 // 1024} MB.")
     except OSError:
         pass
 

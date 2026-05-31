@@ -133,3 +133,32 @@ def test_e2e_progress_file_written_during_run_and_cleared_after(bridge):
     assert "ran 1" in res["stdout"]
     # Progress file is cleaned up after completion (result is authoritative).
     assert not (d.PROGRESS / "1400_str.log").exists()
+
+
+def test_e2e_oversized_command_rejected(bridge):
+    """A command file larger than MAX_CMD_BYTES is rejected, not slurped."""
+    d, _ = bridge
+    cmd_id = "1500_big"
+    f = d.QUEUE / f"{cmd_id}.json"
+    # Write a valid-looking but oversized payload (padding in an unused field).
+    big = {"id": cmd_id, "script": "scripts/increment.sh", "args": [],
+           "token": "test-token", "timeout": 5, "pad": "x" * (d.MAX_CMD_BYTES + 10)}
+    f.write_text(json.dumps(big))
+    d.run_one(f, "test-token", {}, {})
+    res = json.loads((d.RESULTS / f"{cmd_id}.json").read_text())
+    assert res["exit_code"] == -1
+    assert "too large" in res["error"]
+
+
+def test_e2e_wrong_token_rejected(bridge):
+    """Constant-time token check still rejects a wrong token."""
+    d, counter = bridge
+    cmd_id = "1501_tok"
+    f = _enqueue(d, cmd_id)  # _enqueue sets token=test-token
+    # Tamper the token.
+    p = json.loads(f.read_text()); p["token"] = "WRONG"; f.write_text(json.dumps(p))
+    d.run_one(f, "test-token", {}, {})
+    res = json.loads((d.RESULTS / f"{cmd_id}.json").read_text())
+    assert res["exit_code"] == -1
+    assert "token mismatch" in res["error"]
+    assert counter.read_text().strip() == "0", "script must not run on bad token"

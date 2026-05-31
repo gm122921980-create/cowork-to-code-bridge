@@ -8,6 +8,21 @@ All notable changes to this project. Format loosely follows
 
 The big simplification: **install as a global skill, one Mac command, nothing in Cowork.**
 
+### Security & hardening
+- **Constant-time token comparison** (`hmac.compare_digest`) instead of `!=`,
+  removing a token timing side-channel.
+- **Command-size guard:** command files larger than 1 MB are rejected before
+  being read into memory (DoS/OOM guard).
+- **Directory permission hardening:** on startup the daemon tightens
+  `BRIDGE_ROOT`, `queue/`, and `scripts/` to `0700` (and warns) if they're
+  group/other-accessible — so no other local user can read the token, inject a
+  command, or drop a script.
+- **Journal auto-rotation:** the append-only journal now rotates to
+  `journal.log.old` at 50 MB (warns at 10 MB) instead of growing unbounded.
+- Confirmed-not-vulnerable (kept as defense-in-depth): symlink escape from
+  `scripts/` (resolve()+relative_to already rejects it); shell injection via
+  args (list-form argv, never a shell string).
+
 ### Fixed
 - Installer now **fetches the canonical `bridge_client.py`** from the repo at
   install time instead of embedding a hand-maintained copy, so the installed
