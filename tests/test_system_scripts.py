@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import subprocess
 from pathlib import Path
 
@@ -8,6 +9,12 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO_ROOT / "install.sh"
+IS_MACOS = platform.system() == "Darwin"
+
+# mac_ram.sh prints "Total RAM:" on macOS (sysctl branch) but uses `free`/`/proc`
+# on Linux, where the output is the `free -h` table ("Mem:"). The expected
+# fragment must match whichever OS the test actually runs on.
+RAM_FRAGMENT = "Total RAM:" if IS_MACOS else "Mem:"
 
 
 def _extract_script(script_name: str, marker: str) -> str:
@@ -66,7 +73,7 @@ def generated_scripts(tmp_path: Path) -> Path:
                 "=== TOP 5 PROCS BY CPU ===",
             ],
         ),
-        ("mac_ram.sh", [], ["Total RAM:"]),
+        ("mac_ram.sh", [], [RAM_FRAGMENT]),
         ("mac_disk.sh", [], ["=== DISK USAGE ===", "=== ALL MOUNTED VOLUMES ==="]),
         ("mac_top.sh", ["5"], ["=== by CPU ===", "=== by MEM ==="]),
         (
@@ -93,7 +100,12 @@ def test_generated_system_scripts_exit_zero_and_print_expected_sections(
 
     assert result.returncode == 0, result.stderr
     for fragment in expected_fragments:
-        assert fragment in result.stdout
+        # mac_ram.sh on Linux uses `free` (-> "Mem:"), or falls back to
+        # /proc/meminfo (-> "MemTotal:") on the rare box without `free`.
+        if fragment == "Mem:":
+            assert ("Mem:" in result.stdout) or ("MemTotal" in result.stdout), result.stdout
+        else:
+            assert fragment in result.stdout
 
 
 @pytest.mark.parametrize(
