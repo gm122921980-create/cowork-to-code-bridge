@@ -14,6 +14,15 @@ All notable changes to this project. Format loosely follows
   `cowork_results/`. Optional `--wait SECONDS` polls for the reply. Honest
   limitation documented: this is an async hand-off, not a live channel —
   Cowork can't be woken from the machine (no inbound address to the sandbox).
+- **WSL2 (Windows) install path.** Same Linux/systemd installer inside WSL2;
+  `install.sh` detects WSL, prints systemd setup hints when needed, redirects
+  Git Bash/PowerShell users to WSL, and documents paths/lingering. See
+  [docs/WSL.md](docs/WSL.md).
+- `.gitattributes` enforces LF on `*.sh` so Windows checkouts work in WSL/bash.
+
+### Changed
+- Python discovery probes `python3.14` and generic `python3` (fixes Ubuntu WSL
+  distros that only ship `python3` → 3.14).
 
 ### Fixed
 - **Streamlined the Cowork connection (the real first-run gap).** A live session
