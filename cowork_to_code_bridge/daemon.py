@@ -62,6 +62,10 @@ RESULTS = BRIDGE_ROOT / "results"
 PROCESSED = BRIDGE_ROOT / "processed"
 INFLIGHT = BRIDGE_ROOT / "inflight"
 PROGRESS = BRIDGE_ROOT / "progress"  # live <id>.log files the client can tail
+# Reverse direction (#34): requests FROM this machine (Claude Code) TO a Cowork
+# session. Async inbox — Cowork picks these up when a session is next open.
+TO_COWORK = BRIDGE_ROOT / "to_cowork"        # requests Claude Code drops for Cowork
+COWORK_RESULTS = BRIDGE_ROOT / "cowork_results"  # replies Cowork writes back
 JOURNAL = BRIDGE_ROOT / "journal.log"
 POLL_SEC = float(os.environ.get("BRIDGE_POLL_SEC", "1.0"))
 MAX_TIMEOUT_SEC = int(os.environ.get("BRIDGE_MAX_TIMEOUT", "600"))
@@ -459,13 +463,15 @@ def run_one(cmd_path: Path, token_required: str | None,
 
 
 def main() -> int:
-    for d in (BRIDGE_ROOT, QUEUE, RESULTS, PROCESSED, INFLIGHT, PROGRESS, SCRIPTS_DIR):
+    for d in (BRIDGE_ROOT, QUEUE, RESULTS, PROCESSED, INFLIGHT, PROGRESS,
+              TO_COWORK, COWORK_RESULTS, SCRIPTS_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
     # Harden directory perms: only the owner should be able to read the token,
     # write into the queue, or drop scripts. World/group-writable here would let
-    # any local user inject commands or scripts. Tighten + warn if loose.
-    for d in (BRIDGE_ROOT, QUEUE, SCRIPTS_DIR):
+    # any local user inject commands or scripts. to_cowork/ + cowork_results/ are
+    # included because their request/reply files can carry the bridge token.
+    for d in (BRIDGE_ROOT, QUEUE, SCRIPTS_DIR, TO_COWORK, COWORK_RESULTS):
         try:
             mode = d.stat().st_mode & 0o777
             if mode & 0o077:  # any group/other bits set
