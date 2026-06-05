@@ -1169,4 +1169,7 @@ Non-interactively:
 If neither path is available:
   curl -fsSL https://raw.githubusercontent.com/$REPO/main/daemon/uninstall.sh | bash
 
+$(c_yellow "⭐ If this saved you time, a star on GitHub helps others find it:")
+  https://github.com/$REPO
+
 DONE
