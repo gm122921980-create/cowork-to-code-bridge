@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1117"/>
+      <stop offset="1" stop-color="#161b22"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#d97757"/>
+      <stop offset="1" stop-color="#e8a87c"/>
+    </linearGradient>
+  </defs>
+
+  <!-- background -->
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="8" fill="url(#accent)"/>
+
+  <!-- repo handle -->
+  <text x="80" y="120" fill="#8b949e" font-size="30" font-weight="500">github.com/abhinaykrupa/cowork-to-code-bridge</text>
+
+  <!-- headline -->
+  <text x="80" y="220" fill="#ffffff" font-size="66" font-weight="800">Run a real Claude Code agent</text>
+  <text x="80" y="296" fill="#ffffff" font-size="66" font-weight="800">on <tspan fill="#e8a87c">your own machine</tspan> —</text>
+  <text x="80" y="372" fill="#ffffff" font-size="66" font-weight="800">from any Claude chat.</text>
+
+  <!-- subline -->
+  <text x="80" y="446" fill="#adbac7" font-size="34" font-weight="400">Cowork hands a task to Claude Code on your Mac, Linux box, or WSL.</text>
+  <text x="80" y="490" fill="#adbac7" font-size="34" font-weight="400">No terminal. No open ports. Nothing kept open.</text>
+
+  <!-- install pill -->
+  <rect x="80" y="536" width="740" height="64" rx="12" fill="#1c2128" stroke="#30363d" stroke-width="1.5"/>
+  <text x="108" y="577" fill="#7ee787" font-size="27" font-family="'SF Mono', Menlo, Consolas, monospace">$ curl -fsSL .../install.sh | bash</text>
+
+  <!-- safety badges (bottom right) -->
+  <g font-size="23" font-weight="600">
+    <rect x="858" y="536" width="172" height="64" rx="12" fill="#1c2128" stroke="#30363d" stroke-width="1.5"/>
+    <text x="878" y="575" fill="#7ee787">no open ports</text>
+    <rect x="1048" y="536" width="152" height="64" rx="12" fill="#1c2128" stroke="#30363d" stroke-width="1.5"/>
+    <text x="1068" y="575" fill="#7ee787">idempotent</text>
+  </g>
+</svg>

@@ -33,6 +33,11 @@ Because Claude Code can run things on your Mac, a useful **side benefit** is tha
 
 ---
 
+> **Is it safe to let a cloud chat reach my machine?** Short answer: the bridge
+> opens **no network ports**, never uses `sudo`, runs **only scripts you approve**,
+> is gated by a secret token, and uninstalls completely with one command. Full
+> threat model in **[SECURITY.md](SECURITY.md)**.
+
 ## Install — two pastes total
 
 **Step 1 — on your machine (once).** Open Terminal (`Cmd + Space` → **Terminal**), paste this, press Enter:
@@ -125,6 +130,33 @@ Cowork can't reach your machine directly (it's sandboxed). So the bridge uses a 
 | **Cowork in your browser / the cloud** | ❌ No — it runs in a sealed cloud sandbox that can't see your Mac | **Yes** — this bridge is the only way to connect it. |
 
 Not sure which you are? Just follow the [two-paste install above](#install--two-pastes-total) — when you paste the connect line into Cowork, Claude checks for you, and if you don't need the bridge it'll tell you so and skip it.
+
+---
+
+## How it compares
+
+There are several ways to get Claude near a machine. Here's where this bridge fits,
+honestly — including the cases where you **don't** need it:
+
+| Approach | Runs on | Reaches your real shell / files | Always-on / survives reboot | Best when |
+|---|---|---|---|---|
+| **Cowork alone** | Local VM (sandboxed) | ❌ Only a granted workspace folder; sandbox is hypervisor-isolated from the host | n/a | You don't need the host machine at all |
+| **Claude Code on the web** (`--remote`) | Anthropic cloud | ❌ Only your cloned repo; no host access | ❌ Cloud session | The task is fully inside a GitHub repo |
+| **Remote Control** (`--remote-control`) | **Your machine** | ✅ Full local shell/files | ⚠️ Ends when `claude` stops; ~10-min offline timeout; needs paid claude.ai login | You're driving a *live* local session from your phone/web and keep it running |
+| **MCP (local server)** | Your machine | ✅ Within the server you build | ⚠️ You run/maintain the server | You want structured tool calls, not a full agent task — **but Cowork's sandbox can't reach a localhost MCP server** |
+| **SSH / self-hosted runner** | Your machine | ✅ Full | ✅ If you set it up | You're comfortable running and securing your own listener |
+| **this bridge** | **Your machine** | ✅ Full (a real Claude Code agent) | ✅ Daemon auto-restarts, reboot-safe, no session to keep alive | You want to drive your machine **from a Cowork chat**, hands-off, no open port, idempotent |
+
+**The honest takeaway:** the closest first-party option is **Remote Control** — same
+security shape (local execution, outbound-only, no inbound port). The bridge differs
+in that it's driven *from a Cowork chat*, needs no live session kept running (a
+background daemon survives reboots), is idempotent across dropped connections, and
+runs approved scripts directly when you don't need a full agent. If you live in a
+live Claude Code terminal session, Remote Control may suit you better — use the right
+tool for where you actually talk to Claude.
+
+> Feature facts above reflect Anthropic's published docs as of mid-2026
+> (`code.claude.com/docs`). They evolve — corrections welcome via issue or PR.
 
 ---
 
@@ -453,6 +485,20 @@ Developers: the full crash-recovery model (the journal, in-flight markers, and t
 **v0.5.0** — early, but solid. The core works, survives crashes and reboots without repeating risky actions, installs as a global skill (one command), streams live progress for long tasks, and runs on macOS, Linux, and WSL2. Built for myself, open-sourced because it's useful to others. See the [CHANGELOG](CHANGELOG.md) for the full history.
 
 PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Browse [open issues](https://github.com/abhinaykrupa/cowork-to-code-bridge/issues) to find something to work on. Issues triaged best-effort. Not "production-grade" until tagged `v1.0.0`. macOS, Linux, and WSL2; native Windows not yet supported.
+
+### Contributors
+
+Huge thanks to everyone who has shipped code, docs, or tests here 🙏
+
+[@EagleEye-0101](https://github.com/EagleEye-0101) ·
+[@sureshpegadapelli84](https://github.com/sureshpegadapelli84) ·
+[@ded-furby](https://github.com/ded-furby) ·
+[@terminalchai](https://github.com/terminalchai) ·
+[@YuuGR1337](https://github.com/YuuGR1337) ·
+[@Shaan-alpha](https://github.com/Shaan-alpha) ·
+[@osfv](https://github.com/osfv)
+
+New here? A [good first issue](https://github.com/abhinaykrupa/cowork-to-code-bridge/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) is the easiest way in — and if it lands, your handle goes here too. ⭐ A star also genuinely helps others find the project.
 
 ## License
 
