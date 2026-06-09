@@ -6,7 +6,14 @@ All notable changes to this project. Format loosely follows
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-08
+
+First PyPI release. Ships everything below.
+
 ### Added
+- **Homebrew formula (#37).** macOS install via `brew install abhinaykrupa/tap/cowork-to-code-bridge`
+  once the maintainer tap repo exists; canonical formula in `packaging/homebrew/`,
+  demo tap at `EagleEye-0101/tap`, and [docs/HOMEBREW.md](docs/HOMEBREW.md).
 - **`docker_logs.sh` starter script (#21).** Tail a container's logs (`CONTAINER`
   required, optional line count default 50). Clear errors when Docker is
   unavailable or the container does not exist. Wired into install, README, and
