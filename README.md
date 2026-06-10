@@ -48,6 +48,8 @@ Because Claude Code can run things on your Mac, a useful **side benefit** is tha
 curl -fsSL https://raw.githubusercontent.com/abhinaykrupa/cowork-to-code-bridge/main/install.sh | bash
 ```
 
+**macOS (Homebrew)** — once the [maintainer tap](https://github.com/abhinaykrupa/cowork-to-code-bridge/blob/main/docs/HOMEBREW.md) is published: `brew install abhinaykrupa/tap/cowork-to-code-bridge`. See **[docs/HOMEBREW.md](https://github.com/abhinaykrupa/cowork-to-code-bridge/blob/main/docs/HOMEBREW.md)** for details and the demo tap.
+
 Wait ~30 seconds. It installs a small background helper (auto-restarts, reboot-safe) and a Claude skill. When it finishes it prints a **connect line with your real path filled in** — copy that exact line, or use the template below.
 
 Once the package is on PyPI, the installer prefers `pip install` from there (faster than the GitHub fallback).

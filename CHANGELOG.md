@@ -14,6 +14,9 @@ All notable changes to this project. Format loosely follows
 - **Cowork Recipes doc (#38).** Rewrote [docs/RECIPES.md](docs/RECIPES.md) with
   10 plain-English, copy-paste tasks (FastAPI health check, test-fix-commit,
   disk cleanup with confirmation, release tagging, dev-server screenshot, and more).
+- **Homebrew formula (#37).** macOS install via `brew install abhinaykrupa/tap/cowork-to-code-bridge`
+  once the maintainer tap is live; canonical formula in `packaging/homebrew/`,
+  `homebrew-audit` CI job, and [docs/HOMEBREW.md](docs/HOMEBREW.md).
 
 ## [0.5.1] - 2026-06-08
 
