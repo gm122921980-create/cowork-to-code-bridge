@@ -469,7 +469,30 @@ cd "$WORKDIR" || { log "cannot cd to $WORKDIR"; exit 1; }
 #   CLAUDE_FLAGS="--allowedTools Edit,Write,Read,Glob,Grep" # edits only, no shell
 # Unset = full agent. The prompt + output format are always appended.
 read -r -a EXTRA_FLAGS <<< "${CLAUDE_FLAGS:-}"
-exec "$CLAUDE_BIN" "${EXTRA_FLAGS[@]}" -p "$TASK" --output-format text
+
+# ── Budget cap ────────────────────────────────────────────────────────────────
+# MAX_BUDGET_USD: per-task spend ceiling passed in by the client.
+# BRIDGE_MAX_BUDGET_USD: owner-set global ceiling (env / launchd unit).
+# Rule: the effective ceiling = min(caller_value, owner_ceiling).
+# If the owner sets BRIDGE_MAX_BUDGET_USD=5.00 and Cowork sends 10.00,
+# the task is capped at $5. If Cowork sends 1.00, it's capped at $1.
+BUDGET_FLAGS=()
+CALLER_BUDGET="${MAX_BUDGET_USD:-}"
+OWNER_CEILING="${BRIDGE_MAX_BUDGET_USD:-}"
+
+if [[ -n "$OWNER_CEILING" && -n "$CALLER_BUDGET" ]]; then
+  # Both set — use the smaller of the two.
+  # Use awk for float comparison (bash can't do it natively).
+  EFFECTIVE=$(awk -v a="$CALLER_BUDGET" -v b="$OWNER_CEILING" \
+    'BEGIN { print (a < b) ? a : b }')
+  BUDGET_FLAGS=(--max-budget-usd "$EFFECTIVE")
+elif [[ -n "$CALLER_BUDGET" ]]; then
+  BUDGET_FLAGS=(--max-budget-usd "$CALLER_BUDGET")
+elif [[ -n "$OWNER_CEILING" ]]; then
+  BUDGET_FLAGS=(--max-budget-usd "$OWNER_CEILING")
+fi
+
+exec "$CLAUDE_BIN" "${EXTRA_FLAGS[@]}" "${BUDGET_FLAGS[@]}" -p "$TASK" --output-format text
 RUNCLAUDE
 chmod +x "$BRIDGE_ROOT/scripts/run_claude.sh"
 
@@ -479,18 +502,109 @@ chmod +x "$BRIDGE_ROOT/scripts/run_claude.sh"
 # do on its own — the bridge makes it possible.
 cat > "$BRIDGE_ROOT/scripts/mac_health.sh" <<'MH'
 #!/usr/bin/env bash
-# mac_health.sh — full health snapshot of this machine (macOS or Linux). Args: none.
+# mac_health.sh — full health snapshot of this machine (macOS or Linux).
+#
+# Usage: mac_health.sh [--json]
+#   (no flag)   human-readable text sections (default)
+#   --json      structured JSON — parse with json.loads() in Cowork
+#
+# JSON fields: host, os, uptime, load_1m/5m/15m, cpu_usage_pct,
+#   memory_total_bytes, memory_free_bytes, memory_used_bytes, memory_used_pct,
+#   disk_total_1k, disk_used_1k, disk_avail_1k, disk_used_pct,
+#   top_procs [{pid, cpu_pct, mem_pct, name}]
+#
+# No external dependencies (no jq, no python).
 set -u
-echo "=== HOST ==="; hostname
-if [ "$(uname -s)" = "Darwin" ]; then sw_vers 2>/dev/null; else (. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-$(uname -sr)}"); fi
-echo "=== UPTIME / LOAD ==="; uptime
-echo "=== CPU ==="
-if [ "$(uname -s)" = "Darwin" ]; then top -l 1 -n 0 2>/dev/null | grep -E "CPU usage" || echo n/a
-else grep 'cpu ' /proc/stat >/dev/null 2>&1 && echo "load: $(cut -d' ' -f1-3 /proc/loadavg)" || echo n/a; fi
-echo "=== MEMORY ==="
-if [ "$(uname -s)" = "Darwin" ]; then vm_stat 2>/dev/null | head -6; else free -h 2>/dev/null || cat /proc/meminfo | head -3; fi
-echo "=== DISK ==="; df -h / 2>/dev/null
-echo "=== TOP 5 PROCS BY CPU ==="; ps -eo pid,pcpu,pmem,comm 2>/dev/null | sort -k2 -rn | head -6
+
+JSON=0
+for arg in "$@"; do [ "$arg" = "--json" ] && JSON=1; done
+
+OS="$(uname -s)"
+
+# Escape a string for safe embedding in JSON (no jq required).
+_jstr() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g' | tr -d '\r\n'; }
+
+# ── collect ──────────────────────────────────────────────────────────────────
+HOST="$(hostname 2>/dev/null)"
+if [ "$OS" = "Darwin" ]; then
+  OS_NAME="$(sw_vers -productName 2>/dev/null) $(sw_vers -productVersion 2>/dev/null)"
+else
+  OS_NAME="$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-}" || uname -sr)"
+fi
+
+UPTIME_STR="$(uptime 2>/dev/null)"
+LOAD_1="$(echo  "$UPTIME_STR" | grep -oE '[0-9]+\.[0-9]+' | sed -n '1p' || echo '')"
+LOAD_5="$(echo  "$UPTIME_STR" | grep -oE '[0-9]+\.[0-9]+' | sed -n '2p' || echo '')"
+LOAD_15="$(echo "$UPTIME_STR" | grep -oE '[0-9]+\.[0-9]+' | sed -n '3p' || echo '')"
+
+CPU_USAGE=""
+if [ "$OS" = "Darwin" ]; then
+  CPU_USAGE="$(top -l 1 -n 0 2>/dev/null | grep -oE '[0-9]+\.[0-9]+% user' | grep -oE '^[0-9.]+' || echo '')"
+fi
+
+MEM_TOTAL_BYTES=0; MEM_FREE_BYTES=0; MEM_USED_BYTES=0; MEM_USED_PCT=0
+if [ "$OS" = "Darwin" ]; then
+  MEM_TOTAL_BYTES="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"
+  PAGE_SIZE="$(sysctl -n hw.pagesize 2>/dev/null || echo 4096)"
+  PAGES_FREE="$(vm_stat 2>/dev/null | awk '/^Pages free/{gsub(/\./,"",$3); print $3}' || echo 0)"
+  MEM_FREE_BYTES=$(( PAGES_FREE * PAGE_SIZE ))
+  MEM_USED_BYTES=$(( MEM_TOTAL_BYTES - MEM_FREE_BYTES ))
+  [ "$MEM_TOTAL_BYTES" -gt 0 ] && MEM_USED_PCT=$(( MEM_USED_BYTES * 100 / MEM_TOTAL_BYTES ))
+elif command -v free >/dev/null 2>&1; then
+  eval "$(free | awk '/^Mem:/{printf "MEM_TOTAL_BYTES=%d MEM_USED_BYTES=%d MEM_FREE_BYTES=%d", $2*1024, $3*1024, $4*1024}')"
+  [ "$MEM_TOTAL_BYTES" -gt 0 ] && MEM_USED_PCT=$(( MEM_USED_BYTES * 100 / MEM_TOTAL_BYTES ))
+fi
+
+DISK_LINE="$(df -k / 2>/dev/null | awk 'NR==2{print}')"
+DISK_TOTAL="$(echo "$DISK_LINE" | awk '{print $2}')"
+DISK_USED="$(echo  "$DISK_LINE" | awk '{print $3}')"
+DISK_AVAIL="$(echo "$DISK_LINE" | awk '{print $4}')"
+DISK_PCT="$(echo   "$DISK_LINE" | awk '{gsub(/%/,"",$5); print $5}')"
+
+TOP_PROCS_RAW="$(ps -eo pid,pcpu,pmem,comm 2>/dev/null | sort -k2 -rn | awk 'NR>1&&NR<=6{print}')"
+
+# ── output ───────────────────────────────────────────────────────────────────
+if [ "$JSON" -eq 1 ]; then
+  PROCS_JSON="["; first=1
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    [ "$first" -eq 0 ] && PROCS_JSON="$PROCS_JSON,"
+    PROCS_JSON="$PROCS_JSON{\"pid\":$(echo "$line"|awk '{print $1}'),\"cpu_pct\":$(echo "$line"|awk '{print $2}'),\"mem_pct\":$(echo "$line"|awk '{print $3}'),\"name\":\"$(_jstr "$(echo "$line"|awk '{print $4}')")\"}"
+    first=0
+  done <<< "$TOP_PROCS_RAW"
+  PROCS_JSON="$PROCS_JSON]"
+  cat <<EOF
+{
+  "host": "$(_jstr "$HOST")",
+  "os": "$(_jstr "$OS_NAME")",
+  "uptime": "$(_jstr "$UPTIME_STR")",
+  "load_1m": "$LOAD_1", "load_5m": "$LOAD_5", "load_15m": "$LOAD_15",
+  "cpu_usage_pct": "$CPU_USAGE",
+  "memory_total_bytes": $MEM_TOTAL_BYTES,
+  "memory_free_bytes": $MEM_FREE_BYTES,
+  "memory_used_bytes": $MEM_USED_BYTES,
+  "memory_used_pct": $MEM_USED_PCT,
+  "disk_total_1k": ${DISK_TOTAL:-0},
+  "disk_used_1k": ${DISK_USED:-0},
+  "disk_avail_1k": ${DISK_AVAIL:-0},
+  "disk_used_pct": ${DISK_PCT:-0},
+  "top_procs": $PROCS_JSON
+}
+EOF
+else
+  echo "=== HOST ==="; echo "$HOST"
+  if [ "$OS" = "Darwin" ]; then sw_vers 2>/dev/null
+  else (. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-$(uname -sr)}"); fi
+  echo "=== UPTIME / LOAD ==="; echo "$UPTIME_STR"
+  echo "=== CPU ==="
+  if [ "$OS" = "Darwin" ]; then top -l 1 -n 0 2>/dev/null | grep -E "CPU usage" || echo n/a
+  else grep 'cpu ' /proc/stat >/dev/null 2>&1 && echo "load: $(cut -d' ' -f1-3 /proc/loadavg)" || echo n/a; fi
+  echo "=== MEMORY ==="
+  if [ "$OS" = "Darwin" ]; then vm_stat 2>/dev/null | head -6
+  else free -h 2>/dev/null || head -3 /proc/meminfo; fi
+  echo "=== DISK ==="; df -h / 2>/dev/null
+  echo "=== TOP 5 PROCS BY CPU ==="; ps -eo pid,pcpu,pmem,comm 2>/dev/null | sort -k2 -rn | head -6
+fi
 exit 0
 MH
 cat > "$BRIDGE_ROOT/scripts/mac_ram.sh" <<'MR'
@@ -862,7 +976,145 @@ mkdir -p "$BRIDGE_ROOT/to_cowork" "$BRIDGE_ROOT/cowork_results"
 chmod 700 "$BRIDGE_ROOT/to_cowork" "$BRIDGE_ROOT/cowork_results" 2>/dev/null || true
 
 chmod +x "$BRIDGE_ROOT"/scripts/mac_*.sh "$BRIDGE_ROOT/scripts/port_check.sh" "$BRIDGE_ROOT/scripts/docker_ps.sh" "$BRIDGE_ROOT/scripts/docker_logs.sh" "$BRIDGE_ROOT/scripts/pkg_outdated.sh" "$BRIDGE_ROOT/scripts/git_status.sh" "$BRIDGE_ROOT/scripts/list_scripts.sh" "$BRIDGE_ROOT/scripts/env_check.sh" "$BRIDGE_ROOT/scripts/disk_hogs.sh" "$BRIDGE_ROOT/scripts/open_browser.sh"
-c_green "  ✓ scripts installed: ping, hello, run_claude, mac_health, mac_ram, mac_disk, mac_top, mac_network, port_check, docker_ps, docker_logs, pkg_outdated, git_status, list_scripts, env_check, disk_hogs, open_browser, request_cowork"
+
+# process_kill.sh — terminate a named process or PID from Cowork.
+# Safety guards: refuses PID ≤ 10, refuses protected names (launchd/kernel_task/
+# systemd/init/kernel/kthreadd), refuses >1 name match unless --all is passed.
+# Sends SIGTERM (graceful); never SIGKILL.
+# Testability: BRIDGE_PGREP_CMD / BRIDGE_KILL_CMD env vars let tests inject fakes.
+cat > "$BRIDGE_ROOT/scripts/process_kill.sh" <<'PK'
+#!/usr/bin/env bash
+# process_kill.sh — terminate a named process or PID on this machine.
+#
+# Usage
+# -----
+#   process_kill.sh <name|PID> [--all]
+#
+#   Name path : exact match via pgrep -x.
+#               Refuses if >1 match unless --all is passed.
+#   PID path  : numeric PID; must exist and be > 10.
+#
+# Safety guards
+# -------------
+#   - PID ≤ 10 refused (kernel/init territory on all UNIX-like systems)
+#   - Protected names refused: launchd, kernel_task, systemd, init, kernel, kthreadd
+#   - Sends SIGTERM (graceful), never SIGKILL
+#   - Confirms process is gone after the signal
+#
+# Works on macOS and Linux. No deps beyond bash + coreutils.
+#
+# Testability hooks (used by tests/test_system_scripts.py)
+#   BRIDGE_PGREP_CMD   override pgrep binary
+#   BRIDGE_KILL_CMD    override kill binary
+set -uo pipefail
+
+BRIDGE_PGREP_CMD="${BRIDGE_PGREP_CMD:-pgrep}"
+BRIDGE_KILL_CMD="${BRIDGE_KILL_CMD:-kill}"
+
+TARGET="${1:?usage: process_kill.sh <name|PID> [--all]}"
+ALL_FLAG=0
+shift || true
+for arg in "$@"; do [[ "$arg" == "--all" ]] && ALL_FLAG=1; done
+
+PROTECTED_NAMES=("launchd" "kernel_task" "systemd" "init" "kernel" "kthreadd")
+
+_is_protected() {
+  local name="$1"
+  for pname in "${PROTECTED_NAMES[@]}"; do
+    [[ "$name" == "$pname" ]] && return 0
+  done
+  return 1
+}
+
+# Refuse protected names before any pgrep/kill call.
+if _is_protected "$TARGET"; then
+  echo "ERROR: refusing to kill protected process: $TARGET" >&2
+  exit 1
+fi
+
+# ─── PID path ─────────────────────────────────────────────────────────────────
+if [[ "$TARGET" =~ ^[0-9]+$ ]]; then
+  PID="$TARGET"
+
+  if (( PID <= 10 )); then
+    echo "ERROR: refusing to kill PID $PID (≤ 10 is kernel/init territory)" >&2
+    exit 1
+  fi
+
+  if ! "$BRIDGE_KILL_CMD" -0 "$PID" 2>/dev/null; then
+    echo "ERROR: no process with PID $PID" >&2
+    exit 1
+  fi
+
+  PROC_NAME="$(ps -p "$PID" -o comm= 2>/dev/null | tr -d ' ' || echo '?')"
+  if _is_protected "$PROC_NAME"; then
+    echo "ERROR: refusing to kill protected process: $PROC_NAME (PID $PID)" >&2
+    exit 1
+  fi
+
+  echo "Sending SIGTERM to PID $PID ($PROC_NAME)..."
+  "$BRIDGE_KILL_CMD" -TERM "$PID"
+
+  for i in 1 2 3 4 5 6; do
+    sleep 0.5
+    if ! "$BRIDGE_KILL_CMD" -0 "$PID" 2>/dev/null; then
+      echo "✓ PID $PID ($PROC_NAME) is gone"
+      exit 0
+    fi
+  done
+  echo "⚠ PID $PID ($PROC_NAME) still alive after 3s — may need SIGKILL" >&2
+  exit 1
+fi
+
+# ─── Name path ────────────────────────────────────────────────────────────────
+# pgrep -x: exact name match (won't kill 'rail' when asked for 'rails').
+PIDS="$("$BRIDGE_PGREP_CMD" -x "$TARGET" 2>/dev/null || true)"
+
+if [[ -z "$PIDS" ]]; then
+  echo "ERROR: no process named '$TARGET' found" >&2
+  exit 1
+fi
+
+PID_COUNT="$(echo "$PIDS" | wc -l | tr -d ' ')"
+
+if [[ "$PID_COUNT" -gt 1 && "$ALL_FLAG" -eq 0 ]]; then
+  echo "ERROR: $PID_COUNT processes named '$TARGET' found (PIDs: $(echo "$PIDS" | tr '\n' ' '))" >&2
+  echo "  Pass --all to kill all of them, or use a specific PID instead." >&2
+  exit 1
+fi
+
+KILLED=0
+while IFS= read -r pid; do
+  [[ -z "$pid" ]] && continue
+  if (( pid <= 10 )); then
+    echo "  skipping PID $pid (≤ 10)" >&2
+    continue
+  fi
+  echo "Sending SIGTERM to PID $pid ($TARGET)..."
+  if "$BRIDGE_KILL_CMD" -TERM "$pid" 2>/dev/null; then
+    KILLED=$(( KILLED + 1 ))
+  else
+    echo "  WARNING: could not send SIGTERM to PID $pid" >&2
+  fi
+done <<< "$PIDS"
+
+if [[ "$KILLED" -eq 0 ]]; then
+  echo "ERROR: no processes were killed" >&2
+  exit 1
+fi
+
+sleep 0.5
+REMAINING="$({ "$BRIDGE_PGREP_CMD" -x "$TARGET" 2>/dev/null || true; } | wc -l | tr -d ' ')"
+if [[ "$REMAINING" -eq 0 ]]; then
+  echo "✓ $KILLED '$TARGET' process(es) terminated"
+else
+  echo "⚠ $REMAINING '$TARGET' process(es) still alive after SIGTERM — may need SIGKILL" >&2
+  exit 1
+fi
+PK
+chmod +x "$BRIDGE_ROOT/scripts/process_kill.sh"
+
+c_green "  ✓ scripts installed: ping, hello, run_claude, mac_health, mac_ram, mac_disk, mac_top, mac_network, port_check, docker_ps, docker_logs, pkg_outdated, git_status, list_scripts, env_check, disk_hogs, open_browser, request_cowork, process_kill"
 
 # ─── 5b. Fetch the single-file Cowork client (one source of truth) ───────────
 # bridge_client.py is the EXACT file the Cowork sandbox imports. To avoid drift,
@@ -938,6 +1190,11 @@ print(r["exit_code"]); print(r["stdout"])
 Always pass a unique \`idempotency_key\` — Claude Code tasks have side effects, so a
 retry must not run twice.
 
+### Per-task cost cap
+Pass \`max_budget_usd=2.00\` to stop the agent when that amount is spent.
+The owner can set \`BRIDGE_MAX_BUDGET_USD\` as a global ceiling that can never
+be exceeded regardless of what Cowork sends (effective = min(caller, owner)).
+
 ## Step 3 — quick system checks (no agent)
 \`call_remote("scripts/mac_health.sh")\` · \`mac_ram.sh\` · \`mac_disk.sh\` · \`mac_top.sh\` · \`mac_network.sh\` · \`port_check.sh\` · \`docker_ps.sh\` · \`docker_logs.sh\` · \`pkg_outdated.sh\` · \`git_status.sh <path>\`
 
@@ -979,7 +1236,14 @@ r = call_remote("scripts/run_claude.sh",
 print(r["exit_code"]); print(r["stdout"])
 \`\`\`
 Always pass a unique idempotency_key (tasks have side effects). For long builds,
-use call_remote_streaming(..., on_progress=cb).
+use call_remote_streaming(..., on_progress=cb). For a live spinner/ticker:
+\`\`\`python
+def on_status(s):
+    sp = "⣾⣽⣻⢿⡿⣟⣯⣷"
+    print(f"\r  {sp[s['elapsed_s']%8]} {s['last_line'][:60]}… ({s['elapsed_s']}s)", end="", flush=True)
+call_remote_streaming("scripts/run_claude.sh", args=[...], timeout=900, on_status=on_status)
+\`\`\`
+Status dict keys: elapsed_s (int), last_line (str), state ("running"|"done"|"error").
 
 ## Quick checks (no agent)
 scripts/mac_health.sh · mac_ram.sh · mac_disk.sh · mac_top.sh · mac_network.sh · port_check.sh <port> · docker_ps.sh · docker_logs.sh <container> · pkg_outdated.sh · git_status.sh <path>

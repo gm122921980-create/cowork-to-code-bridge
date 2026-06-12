@@ -74,6 +74,7 @@ def call_remote(
     bridge_root: Path | str | None = None,
     idempotency_key: str | None = None,
     plan: str | None = None,
+    max_budget_usd: float | None = None,
 ) -> dict[str, Any]:
     """Submit a script invocation to the Mac daemon and wait for its result.
 
@@ -84,6 +85,9 @@ def call_remote(
       - exit_code -4 = daemon crashed mid-run; treat as indeterminate.
       - `plan` is an optional plain-English description of what the task will do.
         If approve_plan.sh exists on the machine the daemon runs it first.
+      - `max_budget_usd` sets a per-task spend ceiling for run_claude.sh calls.
+        The owner's BRIDGE_MAX_BUDGET_USD is a hard upper limit; if both are set
+        the daemon uses min(max_budget_usd, BRIDGE_MAX_BUDGET_USD).
     Raises TimeoutError if the daemon doesn't respond within timeout + 5s.
     """
     root = Path(bridge_root) if bridge_root else _resolve_bridge_root()
@@ -108,6 +112,8 @@ def call_remote(
         payload["idempotency_key"] = idempotency_key
     if plan is not None:
         payload["plan"] = plan
+    if max_budget_usd is not None:
+        payload["max_budget_usd"] = float(max_budget_usd)
 
     token = _load_token(root)
     if token:
@@ -139,14 +145,23 @@ def call_remote(
 
 def call_remote_streaming(script, args=None, timeout=600, poll_interval=1.0,
                           cwd=None, env=None, bridge_root=None,
-                          idempotency_key=None, on_progress=None,
-                          plan=None) -> dict[str, Any]:
+                          idempotency_key=None, on_progress=None, on_status=None,
+                          plan=None, max_budget_usd=None) -> dict[str, Any]:
     """Like call_remote, but streams live output while the task runs.
 
     The daemon tees the script's output to progress/<id>.log; this polls it and
     calls on_progress(new_text) for each new chunk (or prints it if on_progress
     is None). Use for long tasks (builds, test runs) so they're not blind.
     Returns the same final result dict as call_remote.
+
+    on_status: optional callable receiving status dicts written by the daemon
+    every ~2 s to progress/<id>.status.json.  Each dict has:
+        elapsed_s  (int)  seconds since the script started
+        last_line  (str)  most recent non-empty output line
+        state      (str)  "running" | "done" | "error"
+        exit_code  (int)  present only when state != "running"
+    Called only when the file changes (mtime-gated), so it fires at most once
+    per daemon write cycle (~2 s).
     """
     root = Path(bridge_root) if bridge_root else _resolve_bridge_root()
     queue = root / "queue"; results = root / "results"; progress = root / "progress"
@@ -158,6 +173,7 @@ def call_remote_streaming(script, args=None, timeout=600, poll_interval=1.0,
     if env: payload["env"] = env
     if idempotency_key: payload["idempotency_key"] = idempotency_key
     if plan is not None: payload["plan"] = plan
+    if max_budget_usd is not None: payload["max_budget_usd"] = float(max_budget_usd)
     token = _load_token(root)
     if token: payload["token"] = token
     cmd_file = queue / f"{cmd_id}.json"
@@ -165,8 +181,10 @@ def call_remote_streaming(script, args=None, timeout=600, poll_interval=1.0,
     tmp.write_text(json.dumps(payload)); tmp.rename(cmd_file)
     result_file = results / f"{cmd_id}.json"
     progress_file = progress / f"{cmd_id}.log"
+    status_file = progress / f"{cmd_id}.status.json"
     emit = on_progress or (lambda chunk: print(chunk, end="", flush=True))
     seen = 0
+    last_status_mtime: float = 0.0
     deadline = time.time() + timeout + 5
     while time.time() < deadline:
         try:
@@ -176,6 +194,14 @@ def call_remote_streaming(script, args=None, timeout=600, poll_interval=1.0,
                     emit(data[seen:]); seen = len(data)
         except OSError:
             pass
+        if on_status is not None:
+            try:
+                mtime = status_file.stat().st_mtime
+                if mtime > last_status_mtime:
+                    last_status_mtime = mtime
+                    on_status(json.loads(status_file.read_text()))
+            except (OSError, json.JSONDecodeError):
+                pass
         if result_file.exists():
             try:
                 return json.loads(result_file.read_text())

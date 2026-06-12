@@ -70,6 +70,28 @@ print(r["stdout"])   # what the local Claude Code agent did + reported
 can edit/commit/push, so if the connection drops and you retry, the key makes the
 daemon return the cached result instead of running the agent twice.
 
+### Per-task cost cap (`max_budget_usd`)
+
+Long Claude Code tasks can drift. Pass `max_budget_usd` to set a hard spend
+ceiling — the agent stops and reports what it finished when the budget is hit:
+
+```python
+r = call_remote(
+    "scripts/run_claude.sh",
+    args=["Refactor the auth module", "/path/to/repo"],
+    timeout=600,
+    idempotency_key="refactor-auth-1",
+    max_budget_usd=2.00,   # stop when this is spent, no matter what
+)
+```
+
+The Mac owner can also set `BRIDGE_MAX_BUDGET_USD=5.00` in their launchd/systemd
+env as a **global ceiling** — any per-task budget above that is silently capped.
+If the owner sets 5.00 and Cowork sends 10.00, the effective limit is $5. This
+makes the bridge safe to share: a runaway "rewrite everything" task can't cost
+more than whatever the owner decided.  `max_budget_usd` works with both
+`call_remote` and `call_remote_streaming`.
+
 ### Long tasks — stream live progress (don't wait blind)
 
 Builds and test runs can take minutes. Use `call_remote_streaming` so you see
@@ -90,13 +112,37 @@ Tell the user what's happening as chunks arrive (e.g. "installing deps…",
 "running tests…") rather than leaving them waiting. Same final result + same
 idempotency guarantees as `call_remote`.
 
+### Live status ticker (spinner + elapsed time)
+
+The daemon writes `progress/<id>.status.json` every ~2 s with `{"elapsed_s", "last_line", "state"}`.
+Pass `on_status` to get a compact ticker that doesn't flood the log:
+
+```python
+def on_status(s):
+    SPINNER = "⣾⣽⣻⢿⡿⣟⣯⣷"
+    tick = s["elapsed_s"] % len(SPINNER)
+    print(f"\r  {SPINNER[tick]} {s['last_line'][:60]}… ({s['elapsed_s']}s)",
+          end="", flush=True)
+
+r = call_remote_streaming(
+    "scripts/run_claude.sh",
+    args=["Build the app", "/Users/<them>/projects/app"],
+    timeout=900, on_status=on_status,
+)
+print()   # newline after the spinner
+print(r["exit_code"])
+```
+
+`on_status` and `on_progress` can be combined — `on_status` fires ~every 2 s
+for the ticker while `on_progress` captures the full raw log.
+
 ## Step 3 — quick fixed actions (no agent needed)
 
 For simple, fast system queries, call a ready-made script directly:
 
 | User asks | Call |
 |---|---|
-| "check my Mac's health" | `call_remote("scripts/mac_health.sh")` |
+| "check my Mac's health" | `call_remote("scripts/mac_health.sh")` — text; add `args=["--json"]` for parsed output |
 | "how much RAM / memory?" | `call_remote("scripts/mac_ram.sh")` |
 | "disk space?" | `call_remote("scripts/mac_disk.sh")` |
 | "what's using CPU?" | `call_remote("scripts/mac_top.sh")` |
@@ -109,6 +155,7 @@ For simple, fast system queries, call a ready-made script directly:
 | "what scripts can you run on my machine?" | `call_remote("scripts/list_scripts.sh")` |
 | "show my machine's env / PATH / claude CLI" | `call_remote("scripts/env_check.sh")` |
 | "what's eating disk in ~/Downloads?" | `call_remote("scripts/disk_hogs.sh", args=["~/Downloads", "15"])` |
+| "kill process rails" / "stop PID 1234" | `call_remote("scripts/process_kill.sh", args=["rails"])` or `args=["1234"]` |
 | "open localhost:3000 in my browser" | `call_remote("scripts/open_browser.sh", args=["http://localhost:3000"])` |
 
 **Tip:** if you're unsure what's available, call `list_scripts.sh` first — it

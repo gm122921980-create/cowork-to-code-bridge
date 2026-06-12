@@ -69,6 +69,12 @@ COWORK_RESULTS = BRIDGE_ROOT / "cowork_results"  # replies Cowork writes back
 JOURNAL = BRIDGE_ROOT / "journal.log"
 POLL_SEC = float(os.environ.get("BRIDGE_POLL_SEC", "1.0"))
 MAX_TIMEOUT_SEC = int(os.environ.get("BRIDGE_MAX_TIMEOUT", "600"))
+# Owner-set per-task budget ceiling for run_claude.sh calls.
+# If set, daemon injects MAX_BUDGET_USD into the script env and run_claude.sh
+# passes it to `claude --max-budget-usd`.  The script also reads
+# BRIDGE_MAX_BUDGET_USD so the owner ceiling can never be exceeded regardless
+# of what the caller sends.
+_MAX_BUDGET_USD_STR: str | None = os.environ.get("BRIDGE_MAX_BUDGET_USD") or None
 ALLOW_UNAUTH = os.environ.get("BRIDGE_ALLOW_UNAUTH") == "1"
 JOURNAL_WARN_BYTES = 10 * 1024 * 1024  # warn at 10 MB
 JOURNAL_ROTATE_BYTES = 50 * 1024 * 1024  # rotate at 50 MB (keep one .old)
@@ -255,7 +261,8 @@ def _drain_stale_queue(terminal: dict[str, str]) -> None:
 
 
 def _run_streaming(argv: list[str], cwd: str, env: dict[str, str],
-                   timeout: int, progress_file: Path) -> dict[str, Any]:
+                   timeout: int, progress_file: Path,
+                   status_interval: float = 2.0) -> dict[str, Any]:
     """Run a subprocess, teeing stdout+stderr to progress_file line-by-line.
 
     Returns the same result dict shape as the old subprocess.run path:
@@ -265,18 +272,50 @@ def _run_streaming(argv: list[str], cwd: str, env: dict[str, str],
 
     The progress file is a best-effort live view (the client tails it). The
     authoritative output is the captured stdout/stderr returned here.
+
+    Every ~status_interval seconds a small status JSON is written atomically
+    alongside the progress log:
+      progress/<id>.status.json → {"elapsed_s": int, "last_line": str, "state": str}
+    The client can poll this file for a live ticker without parsing raw log output.
+    The status file is written atomically (tmp + rename) so readers never see
+    a partial write. It is cleaned up by run_one() after the result is written.
     """
     out_buf: list[str] = []
     err_buf: list[str] = []
+    # Shared slot: _tee updates this so the status writer has a recent line.
+    last_line: list[str] = [""]
+
     # Truncate/create the progress file at start.
     with contextlib.suppress(OSError):
         progress_file.write_text("")
+
+    status_file = progress_file.parent / (progress_file.stem + ".status.json")
+    start_time = time.monotonic()
+
+    def _write_status_atomic(state: str, exit_code: int | None = None) -> None:
+        """Write status JSON atomically; never raises."""
+        try:
+            payload: dict[str, Any] = {
+                "elapsed_s": int(time.monotonic() - start_time),
+                "last_line": last_line[0].rstrip(),
+                "state": state,
+            }
+            if exit_code is not None:
+                payload["exit_code"] = exit_code
+            tmp = status_file.parent / (status_file.name + ".tmp")
+            tmp.write_text(json.dumps(payload))
+            tmp.rename(status_file)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _tee(stream, buf, tag):
         # Read line-by-line; append to in-memory buffer AND the progress file.
         try:
             for line in iter(stream.readline, ""):
                 buf.append(line)
+                stripped = line.strip()
+                if stripped:
+                    last_line[0] = stripped
                 with contextlib.suppress(OSError), progress_file.open("a") as pf:
                     pf.write(line if tag == "out" else f"[stderr] {line}")
         finally:
@@ -296,6 +335,18 @@ def _run_streaming(argv: list[str], cwd: str, env: dict[str, str],
     t_out.start()
     t_err.start()
 
+    # Status writer: fires every ~status_interval seconds until _status_stop is set.
+    # Using threading.Event.wait(timeout) instead of sleep so the thread wakes up
+    # immediately on stop rather than waiting a full interval.
+    _status_stop = threading.Event()
+
+    def _write_status_loop() -> None:
+        while not _status_stop.wait(timeout=status_interval):
+            _write_status_atomic(state="running")
+
+    t_status = threading.Thread(target=_write_status_loop, daemon=True)
+    t_status.start()
+
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -303,6 +354,11 @@ def _run_streaming(argv: list[str], cwd: str, env: dict[str, str],
         proc.wait()
         t_out.join(timeout=2)
         t_err.join(timeout=2)
+        # Stop status writer before writing the final status so "running" can
+        # never overwrite the terminal state.
+        _status_stop.set()
+        t_status.join(timeout=0.5)
+        _write_status_atomic(state="error", exit_code=-2)
         return {
             "exit_code": -2,
             "error": f"timeout after {timeout}s",
@@ -312,6 +368,11 @@ def _run_streaming(argv: list[str], cwd: str, env: dict[str, str],
 
     t_out.join(timeout=5)
     t_err.join(timeout=5)
+    # Stop status writer first, then write terminal state (same ordering as above).
+    _status_stop.set()
+    t_status.join(timeout=0.5)
+    final_state = "done" if proc.returncode == 0 else "error"
+    _write_status_atomic(state=final_state, exit_code=proc.returncode)
     return {
         "exit_code": proc.returncode,
         "stdout": "".join(out_buf)[-65536:],
@@ -471,10 +532,31 @@ def run_one(cmd_path: Path, token_required: str | None,
         if k not in env:          # owner var wins; caller can only add new ones
             env[k] = str(v)
         elif k.upper() in ("CLAUDE_FLAGS", "BRIDGE_TOKEN", "BRIDGE_ROOT",
-                           "BRIDGE_ALLOW_UNAUTH", "BRIDGE_MAX_TIMEOUT"):
+                           "BRIDGE_ALLOW_UNAUTH", "BRIDGE_MAX_TIMEOUT",
+                           "BRIDGE_MAX_BUDGET_USD"):
             log(f"  ! blocked caller attempt to override protected env var: {k}")
         else:
             env[k] = str(v)       # non-security vars: caller wins (e.g. PYTHONPATH)
+
+    # ── Budget cap injection ──────────────────────────────────────────────────
+    # Inject MAX_BUDGET_USD from the command payload into the script environment
+    # so run_claude.sh can forward it to `claude --max-budget-usd`.
+    # The owner ceiling (BRIDGE_MAX_BUDGET_USD) is also forwarded so run_claude.sh
+    # can apply min(caller, owner) itself — this gives the script full context.
+    # MAX_BUDGET_USD from the caller is validated to be a positive float; invalid
+    # values are ignored (logged) so a bad payload can't crash the daemon.
+    caller_budget_raw = cmd.get("max_budget_usd")
+    if caller_budget_raw is not None:
+        try:
+            caller_budget = float(caller_budget_raw)
+            if caller_budget <= 0:
+                raise ValueError("must be positive")
+            env["MAX_BUDGET_USD"] = f"{caller_budget:.4f}"
+        except (TypeError, ValueError) as exc:
+            log(f"  ! ignoring invalid max_budget_usd={caller_budget_raw!r}: {exc}")
+    if _MAX_BUDGET_USD_STR:
+        # Always forward the owner ceiling so run_claude.sh can enforce it.
+        env["BRIDGE_MAX_BUDGET_USD"] = _MAX_BUDGET_USD_STR
 
     # ─── in-flight marker + journal: started ──────────────────────────────────
     # Marker is written BEFORE subprocess.run. If we crash between this point
@@ -503,8 +585,9 @@ def run_one(cmd_path: Path, token_required: str | None,
     if idem_key:
         idem_cache.setdefault(idem_key, result)
     _inflight_clear(cmd_id)
-    # The result file is now authoritative; drop the live progress file.
+    # The result file is now authoritative; drop the live progress + status files.
     (PROGRESS / f"{cmd_id}.log").unlink(missing_ok=True)
+    (PROGRESS / f"{cmd_id}.status.json").unlink(missing_ok=True)
     cmd_path.rename(PROCESSED / cmd_path.name)
     log(f"  ✓ {cmd_id}: exit={result['exit_code']}")
 

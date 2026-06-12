@@ -123,6 +123,265 @@ def test_example_system_scripts_match_install_templates(script_name: str, marker
     assert example_path.read_text() == _extract_script(script_name, marker)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# mac_health.sh --json tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.fixture()
+def mac_health_script(tmp_path: Path) -> Path:
+    script = tmp_path / "mac_health.sh"
+    script.write_text(_extract_script("mac_health.sh", "MH"))
+    script.chmod(0o755)
+    return script
+
+
+def test_mac_health_default_text_output(mac_health_script: Path) -> None:
+    """Default (no flag) output is human-readable text with expected sections."""
+    result = subprocess.run(
+        [str(mac_health_script)],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    assert result.returncode == 0, result.stderr
+    for section in ["=== HOST ===", "=== UPTIME / LOAD ===", "=== MEMORY ===", "=== DISK ==="]:
+        assert section in result.stdout, f"missing {section!r} in text output"
+
+
+def test_mac_health_json_flag_valid_json(mac_health_script: Path) -> None:
+    """--json flag produces valid, parseable JSON."""
+    import json
+    result = subprocess.run(
+        [str(mac_health_script), "--json"],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)  # raises if invalid JSON
+    assert isinstance(data, dict)
+
+
+def test_mac_health_json_has_required_keys(mac_health_script: Path) -> None:
+    """--json output contains all documented fields."""
+    import json
+    result = subprocess.run(
+        [str(mac_health_script), "--json"],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    required = {
+        "host", "os", "uptime",
+        "load_1m", "load_5m", "load_15m",
+        "memory_total_bytes", "memory_free_bytes", "memory_used_bytes", "memory_used_pct",
+        "disk_total_1k", "disk_used_1k", "disk_avail_1k", "disk_used_pct",
+        "top_procs",
+    }
+    missing = required - data.keys()
+    assert not missing, f"missing keys in JSON output: {missing}"
+
+
+def test_mac_health_json_top_procs_structure(mac_health_script: Path) -> None:
+    """top_procs is a list of dicts with expected per-process keys."""
+    import json
+    result = subprocess.run(
+        [str(mac_health_script), "--json"],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    procs = data["top_procs"]
+    assert isinstance(procs, list)
+    for proc in procs:
+        for key in ("pid", "cpu_pct", "mem_pct", "name"):
+            assert key in proc, f"proc missing key {key!r}: {proc}"
+
+
+def test_mac_health_json_memory_bytes_positive(mac_health_script: Path) -> None:
+    """memory_total_bytes should be a positive integer on any real machine."""
+    import json
+    result = subprocess.run(
+        [str(mac_health_script), "--json"],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert isinstance(data["memory_total_bytes"], int)
+    assert data["memory_total_bytes"] > 0, "memory_total_bytes should be > 0"
+
+
+def test_mac_health_text_mode_unchanged(mac_health_script: Path) -> None:
+    """Text output must NOT contain JSON artefacts (no braces/quotes at line start)."""
+    result = subprocess.run(
+        [str(mac_health_script)],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    assert result.returncode == 0, result.stderr
+    # First character of output should not be '{' (that would mean JSON leaked into text mode)
+    assert not result.stdout.strip().startswith("{"), "text mode output looks like JSON"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# process_kill.sh tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.fixture()
+def process_kill_script(tmp_path: Path) -> Path:
+    """Extract process_kill.sh from install.sh into tmp dir and make executable."""
+    script_path = tmp_path / "process_kill.sh"
+    script_path.write_text(_extract_script("process_kill.sh", "PK"))
+    script_path.chmod(0o755)
+    return script_path
+
+
+def _fake_kill(tmp_path: Path, behaviour: str) -> Path:
+    """Create a fake kill binary.
+
+    behaviour:
+      'success'  — exits 0 for both -0 (exists check) and -TERM
+      'no_proc'  — exits 1 for -0 (process not found)
+    """
+    kill = tmp_path / "fake_kill"
+    if behaviour == "success":
+        kill.write_text("#!/usr/bin/env bash\nexit 0\n")
+    else:  # no_proc
+        kill.write_text("#!/usr/bin/env bash\nexit 1\n")
+    kill.chmod(0o755)
+    return kill
+
+
+def _fake_pgrep(tmp_path: Path, pids: list[int] | None) -> Path:
+    """Create a fake pgrep that returns given PIDs (one per line), or exits 1 if None."""
+    pgrep = tmp_path / "fake_pgrep"
+    if pids is None:
+        pgrep.write_text("#!/usr/bin/env bash\nexit 1\n")
+    else:
+        output = "\\n".join(str(p) for p in pids)
+        pgrep.write_text(f'#!/usr/bin/env bash\nprintf "{output}\\n"\nexit 0\n')
+    pgrep.chmod(0o755)
+    return pgrep
+
+
+def _run_pk(script: Path, args: list[str], env: dict | None = None) -> subprocess.CompletedProcess:
+    merged = {**os.environ, **(env or {})}
+    return subprocess.run(
+        [str(script), *args],
+        capture_output=True, text=True, check=False, env=merged,
+    )
+
+
+# ── Safety guards ─────────────────────────────────────────────────────────────
+
+def test_process_kill_refuses_pid_le_10(process_kill_script: Path, tmp_path: Path) -> None:
+    fake_kill = _fake_kill(tmp_path, "success")
+    result = _run_pk(process_kill_script, ["5"], {"BRIDGE_KILL_CMD": str(fake_kill)})
+    assert result.returncode != 0
+    assert "10" in result.stderr
+
+
+def test_process_kill_refuses_pid_1(process_kill_script: Path, tmp_path: Path) -> None:
+    fake_kill = _fake_kill(tmp_path, "success")
+    result = _run_pk(process_kill_script, ["1"], {"BRIDGE_KILL_CMD": str(fake_kill)})
+    assert result.returncode != 0
+
+
+@pytest.mark.parametrize(
+    "name", ["launchd", "kernel_task", "systemd", "init", "kernel", "kthreadd"]
+)
+def test_process_kill_refuses_protected_names(
+    process_kill_script: Path, tmp_path: Path, name: str
+) -> None:
+    fake_pgrep = _fake_pgrep(tmp_path, [9999])
+    fake_kill = _fake_kill(tmp_path, "success")
+    result = _run_pk(
+        process_kill_script, [name],
+        {"BRIDGE_PGREP_CMD": str(fake_pgrep), "BRIDGE_KILL_CMD": str(fake_kill)},
+    )
+    assert result.returncode != 0
+    assert "refusing" in result.stderr.lower() or "protected" in result.stderr.lower()
+
+
+def test_process_kill_refuses_nonexistent_pid(process_kill_script: Path, tmp_path: Path) -> None:
+    fake_kill = _fake_kill(tmp_path, "no_proc")
+    result = _run_pk(process_kill_script, ["9999"], {"BRIDGE_KILL_CMD": str(fake_kill)})
+    assert result.returncode != 0
+    assert "no process" in result.stderr.lower()
+
+
+# ── Name-path behaviour ───────────────────────────────────────────────────────
+
+def test_process_kill_name_not_found(process_kill_script: Path, tmp_path: Path) -> None:
+    fake_pgrep = _fake_pgrep(tmp_path, None)
+    result = _run_pk(process_kill_script, ["myapp"], {"BRIDGE_PGREP_CMD": str(fake_pgrep)})
+    assert result.returncode != 0
+    assert "no process" in result.stderr.lower()
+
+
+def test_process_kill_multiple_matches_no_all_flag(
+    process_kill_script: Path, tmp_path: Path
+) -> None:
+    fake_pgrep = _fake_pgrep(tmp_path, [1234, 5678])
+    fake_kill = _fake_kill(tmp_path, "success")
+    result = _run_pk(
+        process_kill_script, ["myapp"],
+        {"BRIDGE_PGREP_CMD": str(fake_pgrep), "BRIDGE_KILL_CMD": str(fake_kill)},
+    )
+    assert result.returncode != 0
+    assert "--all" in result.stderr
+
+
+def test_process_kill_multiple_matches_with_all_flag(
+    process_kill_script: Path, tmp_path: Path
+) -> None:
+    # First pgrep call returns 2 PIDs; second (post-kill check) returns empty.
+    stateful_pgrep = tmp_path / "fake_pgrep_stateful"
+    stateful_pgrep.write_text(
+        '#!/usr/bin/env bash\n'
+        'STATE="$(dirname "$0")/.called"\n'
+        'if [[ ! -f "$STATE" ]]; then touch "$STATE"; printf "1234\\n5678\\n"; exit 0; fi\n'
+        'exit 1\n'
+    )
+    stateful_pgrep.chmod(0o755)
+    fake_kill = _fake_kill(tmp_path, "success")
+    result = _run_pk(
+        process_kill_script, ["myapp", "--all"],
+        {"BRIDGE_PGREP_CMD": str(stateful_pgrep), "BRIDGE_KILL_CMD": str(fake_kill)},
+    )
+    assert result.returncode == 0
+    assert "✓" in result.stdout or "terminated" in result.stdout.lower()
+
+
+def test_process_kill_single_match_succeeds(
+    process_kill_script: Path, tmp_path: Path
+) -> None:
+    stateful_pgrep = tmp_path / "fake_pgrep_single"
+    stateful_pgrep.write_text(
+        '#!/usr/bin/env bash\n'
+        'STATE="$(dirname "$0")/.called"\n'
+        'if [[ ! -f "$STATE" ]]; then touch "$STATE"; printf "9999\\n"; exit 0; fi\n'
+        'exit 1\n'
+    )
+    stateful_pgrep.chmod(0o755)
+    fake_kill = _fake_kill(tmp_path, "success")
+    result = _run_pk(
+        process_kill_script, ["myapp"],
+        {"BRIDGE_PGREP_CMD": str(stateful_pgrep), "BRIDGE_KILL_CMD": str(fake_kill)},
+    )
+    assert result.returncode == 0
+    assert "✓" in result.stdout or "terminated" in result.stdout.lower()
+
+
+# ── Template sync ─────────────────────────────────────────────────────────────
+
+def test_process_kill_example_matches_install_template() -> None:
+    """examples/allowed_scripts/process_kill.sh must be identical to the install.sh heredoc."""
+    example = REPO_ROOT / "examples" / "allowed_scripts" / "process_kill.sh"
+    assert example.read_text() == _extract_script("process_kill.sh", "PK")
+
+
 # ── newer utility scripts (list_scripts, env_check, disk_hogs, open_browser) ──
 
 NEW_SCRIPTS = [

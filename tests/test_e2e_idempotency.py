@@ -135,6 +135,168 @@ def test_e2e_progress_file_written_during_run_and_cleared_after(bridge):
     assert not (d.PROGRESS / "1400_str.log").exists()
 
 
+def test_e2e_status_file_cleaned_up_after_run(bridge):
+    """The daemon removes the .status.json alongside the .log after the result
+    is written. Clients polling the status file should see it disappear once
+    the final result JSON is available."""
+    d, _ = bridge
+    terminal, cache = {}, {}
+    f = _enqueue(d, "1500_sta")
+    d.run_one(f, "test-token", terminal, cache)
+
+    assert not (d.PROGRESS / "1500_sta.status.json").exists(), (
+        ".status.json must be removed alongside .log after run completes"
+    )
+    assert not (d.PROGRESS / "1500_sta.log").exists()
+
+
+def test_e2e_status_file_has_correct_terminal_state_for_success(bridge, tmp_path):
+    """The _write_status_atomic helper writes state='done' and exit_code=0 on
+    success before the file is cleaned up by run_one.  We verify by patching
+    the cleanup so we can read the file."""
+    d, _ = bridge
+
+    # Instead, test _run_streaming directly with a short script.
+    script = tmp_path / "ok.sh"
+    script.write_text("#!/bin/bash\necho hello\n")
+    script.chmod(0o755)
+    progress_file = tmp_path / "progress" / "test.log"
+    progress_file.parent.mkdir(parents=True, exist_ok=True)
+    d._run_streaming(
+        ["bash", str(script)], str(tmp_path), {}, timeout=10,
+        progress_file=progress_file,
+    )
+    status_file = tmp_path / "progress" / "test.status.json"
+    # _run_streaming writes the terminal status BEFORE returning.
+    assert status_file.exists(), ".status.json must be written by _run_streaming before return"
+    s = json.loads(status_file.read_text())
+    assert s["state"] == "done"
+    assert s["exit_code"] == 0
+    assert isinstance(s["elapsed_s"], int)
+    assert "last_line" in s
+
+
+def test_e2e_status_file_state_error_on_nonzero_exit(bridge, tmp_path):
+    """state='error' when the script exits non-zero."""
+    d, _ = bridge
+    script = tmp_path / "fail.sh"
+    script.write_text("#!/bin/bash\necho oops\nexit 42\n")
+    script.chmod(0o755)
+    progress_file = tmp_path / "progress" / "fail.log"
+    progress_file.parent.mkdir(parents=True, exist_ok=True)
+    d._run_streaming(
+        ["bash", str(script)], str(tmp_path), {}, timeout=10,
+        progress_file=progress_file,
+    )
+    status_file = tmp_path / "progress" / "fail.status.json"
+    assert status_file.exists()
+    s = json.loads(status_file.read_text())
+    assert s["state"] == "error"
+    assert s["exit_code"] == 42
+
+
+def test_e2e_status_file_last_line_captured(bridge, tmp_path):
+    """last_line in the status file reflects the most recent non-empty output."""
+    d, _ = bridge
+    script = tmp_path / "lines.sh"
+    script.write_text("#!/bin/bash\necho first line\necho second line\n")
+    script.chmod(0o755)
+    progress_file = tmp_path / "progress" / "lines.log"
+    progress_file.parent.mkdir(parents=True, exist_ok=True)
+    d._run_streaming(
+        ["bash", str(script)], str(tmp_path), {}, timeout=10,
+        progress_file=progress_file,
+    )
+    status_file = tmp_path / "progress" / "lines.status.json"
+    s = json.loads(status_file.read_text())
+    assert s["last_line"] == "second line"
+
+
+# ─── max_budget_usd tests ─────────────────────────────────────────────────────
+
+def _budget_bridge(tmp_path, monkeypatch, owner_ceiling=None):
+    """Return a bridge fixture with an optional BRIDGE_MAX_BUDGET_USD ceiling."""
+    monkeypatch.setenv("BRIDGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("BRIDGE_TOKEN", "test-token")
+    if owner_ceiling is not None:
+        monkeypatch.setenv("BRIDGE_MAX_BUDGET_USD", str(owner_ceiling))
+    else:
+        monkeypatch.delenv("BRIDGE_MAX_BUDGET_USD", raising=False)
+    import cowork_to_code_bridge.daemon as d
+    importlib.reload(d)
+    for sub in (d.QUEUE, d.RESULTS, d.PROCESSED, d.INFLIGHT, d.PROGRESS, d.SCRIPTS_DIR):
+        sub.mkdir(parents=True, exist_ok=True)
+    # A script that dumps its environment so we can inspect MAX_BUDGET_USD.
+    script = d.SCRIPTS_DIR / "dump_env.sh"
+    script.write_text("#!/bin/bash\nenv\n")
+    script.chmod(0o755)
+    return d
+
+
+def test_budget_caller_value_forwarded_to_env(tmp_path, monkeypatch):
+    """max_budget_usd in the command payload is forwarded as MAX_BUDGET_USD env var."""
+    d = _budget_bridge(tmp_path, monkeypatch)
+    p = {"id": "b1", "script": "scripts/dump_env.sh", "args": [],
+         "token": "test-token", "timeout": 5, "max_budget_usd": 3.5}
+    (d.QUEUE / "b1.json").write_text(json.dumps(p))
+    d.run_one(d.QUEUE / "b1.json", "test-token", {}, {})
+    res = json.loads((d.RESULTS / "b1.json").read_text())
+    assert res["exit_code"] == 0
+    assert "MAX_BUDGET_USD=3.5000" in res["stdout"]
+
+
+def test_budget_owner_ceiling_forwarded_to_env(tmp_path, monkeypatch):
+    """BRIDGE_MAX_BUDGET_USD owner ceiling is forwarded as BRIDGE_MAX_BUDGET_USD env var."""
+    d = _budget_bridge(tmp_path, monkeypatch, owner_ceiling=5.0)
+    p = {"id": "b2", "script": "scripts/dump_env.sh", "args": [],
+         "token": "test-token", "timeout": 5}
+    (d.QUEUE / "b2.json").write_text(json.dumps(p))
+    d.run_one(d.QUEUE / "b2.json", "test-token", {}, {})
+    res = json.loads((d.RESULTS / "b2.json").read_text())
+    assert res["exit_code"] == 0
+    assert "BRIDGE_MAX_BUDGET_USD=5.0" in res["stdout"]
+
+
+def test_budget_invalid_value_ignored(tmp_path, monkeypatch):
+    """A non-numeric max_budget_usd is silently dropped; the script still runs."""
+    d = _budget_bridge(tmp_path, monkeypatch)
+    p = {"id": "b3", "script": "scripts/dump_env.sh", "args": [],
+         "token": "test-token", "timeout": 5, "max_budget_usd": "bad"}
+    (d.QUEUE / "b3.json").write_text(json.dumps(p))
+    d.run_one(d.QUEUE / "b3.json", "test-token", {}, {})
+    res = json.loads((d.RESULTS / "b3.json").read_text())
+    assert res["exit_code"] == 0
+    assert "MAX_BUDGET_USD" not in res["stdout"]
+
+
+def test_budget_negative_value_ignored(tmp_path, monkeypatch):
+    """Negative max_budget_usd is silently dropped."""
+    d = _budget_bridge(tmp_path, monkeypatch)
+    p = {"id": "b4", "script": "scripts/dump_env.sh", "args": [],
+         "token": "test-token", "timeout": 5, "max_budget_usd": -1.0}
+    (d.QUEUE / "b4.json").write_text(json.dumps(p))
+    d.run_one(d.QUEUE / "b4.json", "test-token", {}, {})
+    res = json.loads((d.RESULTS / "b4.json").read_text())
+    assert res["exit_code"] == 0
+    assert "MAX_BUDGET_USD" not in res["stdout"]
+
+
+def test_budget_caller_cannot_override_owner_ceiling(tmp_path, monkeypatch):
+    """Caller cannot override BRIDGE_MAX_BUDGET_USD — it is in the protected list."""
+    d = _budget_bridge(tmp_path, monkeypatch, owner_ceiling=5.0)
+    # Caller tries to set BRIDGE_MAX_BUDGET_USD via the env dict (not max_budget_usd).
+    p = {"id": "b5", "script": "scripts/dump_env.sh", "args": [],
+         "token": "test-token", "timeout": 5,
+         "env": {"BRIDGE_MAX_BUDGET_USD": "999.0"}}
+    (d.QUEUE / "b5.json").write_text(json.dumps(p))
+    d.run_one(d.QUEUE / "b5.json", "test-token", {}, {})
+    res = json.loads((d.RESULTS / "b5.json").read_text())
+    assert res["exit_code"] == 0
+    # The owner's value (5.0) must not have been overwritten to 999.
+    assert "BRIDGE_MAX_BUDGET_USD=999" not in res["stdout"]
+    assert "BRIDGE_MAX_BUDGET_USD=5.0" in res["stdout"]
+
+
 def test_e2e_oversized_command_rejected(bridge):
     """A command file larger than MAX_CMD_BYTES is rejected, not slurped."""
     d, _ = bridge
@@ -156,7 +318,9 @@ def test_e2e_wrong_token_rejected(bridge):
     cmd_id = "1501_tok"
     f = _enqueue(d, cmd_id)  # _enqueue sets token=test-token
     # Tamper the token.
-    p = json.loads(f.read_text()); p["token"] = "WRONG"; f.write_text(json.dumps(p))
+    p = json.loads(f.read_text())
+    p["token"] = "WRONG"
+    f.write_text(json.dumps(p))
     d.run_one(f, "test-token", {}, {})
     res = json.loads((d.RESULTS / f"{cmd_id}.json").read_text())
     assert res["exit_code"] == -1
