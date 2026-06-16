@@ -25,25 +25,41 @@
 
 ---
 
-### ⏳ Hermes (PENDING - Manual or Via Chrome)
+### ✅ Hermes (COMPLETED)
 
-**Repository:** https://github.com/joaomdmoura/hermes or https://github.com/hermes-agent/hermes  
-**Title:** "Direct integration: MCP provider for Claude Code subscription (no API keys)"
+| Item | Status | Details |
+|---|---|---|
+| **Repository** | ✅ Posted | https://github.com/NousResearch/hermes-agent |
+| **Issue** | ✅ Created | #47199 - "Integration: MCP provider for Claude Code subscription — local backend without API keys" |
+| **Posted By** | Chrome MCP automation | Successfully created via browser automation |
+| **Timestamp** | 2026-06-16 | Issue created and live |
+| **Content** | ✅ Complete | Full problem statement, solution description, reference links |
+| **URL** | Live | https://github.com/NousResearch/hermes-agent/issues/47199 |
 
-**Content Ready:** YES (in docs/HERMES_OPENCLAW_OUTREACH.md)
-
-**Next Step:** Navigate to Hermes repo → Issues → New Issue → Feature Request template → Fill form
+**Content Highlights:**
+- Problem: Hermes agents can't access Claude Max/Pro subscription (April 2026 policy change)
+- Solution: Use cowork-to-code-bridge as MCP provider
+- Reference links: Bridge repo, MCP docs, integration guide
+- Key differentiator: Cost/local context comparison vs API key path
 
 ---
 
-### ⏳ Open Claw (PENDING - Manual or Via Chrome)
+### ✅ Open Claw (COMPLETED)
 
-**Repository:** https://github.com/OpenClaw/openclaw  
-**Title:** "Direct integration: MCP provider for Claude Code subscription (no tokens)"
+| Item | Status | Details |
+|---|---|---|
+| **Repository** | ✅ Posted | https://github.com/openclaw/openclaw |
+| **Issue** | ✅ Created | #93609 - "Integration: MCP provider for Claude Code subscription — local agent execution without API keys" |
+| **Posted By** | Chrome MCP automation | Successfully created via browser automation |
+| **Timestamp** | 2026-06-16 | Issue created and live |
+| **Content** | ✅ Complete | Full problem statement, solution description, reference links |
+| **URL** | Live | https://github.com/openclaw/openclaw/issues/93609 |
 
-**Content Ready:** YES (in docs/HERMES_OPENCLAW_OUTREACH.md)
-
-**Next Step:** Navigate to Open Claw repo → Issues → New Issue → Feature Request template → Fill form
+**Content Highlights:**
+- Problem: Open Claw workflows can't route work to Claude subscription directly
+- Solution: Use cowork-to-code-bridge as MCP provider
+- Comprehensive sections: Problem, Proposed solution, Alternatives, Impact, Evidence, Additional info
+- Key differentiator: Lightweight, zero network ports, production-ready
 
 ---
 
@@ -52,8 +68,8 @@
 | Repo | Status | Effort | Notes |
 |---|---|---|---|
 | **Crew.ai** | ✅ Completed | Automated via Chrome | Issue #6178 live |
-| **Hermes** | ⏳ Ready to post | Manual form fill | Templates prepared, repo TBD |
-| **Open Claw** | ⏳ Ready to post | Manual form fill | Templates prepared |
+| **Hermes** | ✅ Completed | Automated via Chrome | Issue #47199 live (NousResearch/hermes-agent) |
+| **Open Claw** | ✅ Completed | Automated via Chrome | Issue #93609 live (openclaw/openclaw) |
 
 ---
 
@@ -137,6 +153,7 @@ These links appear in every issue and direct maintainers to our implementation:
 
 ---
 
-**Status:** 33% Complete (1 of 3 posted)  
+**Status:** 100% Complete (3 of 3 posted)  
 **Quality:** Production-ready with comprehensive documentation  
-**Next Action:** Post Hermes and Open Claw issues manually or via Chrome automation
+**Timeline:** All three repositories outreached on 2026-06-16 via Chrome MCP automation  
+**Next Action:** Monitor GitHub issues for community responses and engagement
