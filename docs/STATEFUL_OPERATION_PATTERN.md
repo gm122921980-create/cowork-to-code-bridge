@@ -15,6 +15,31 @@ This pattern is implemented in `cowork-to-code-bridge` and validated in producti
 
 ---
 
+## Table of Contents
+
+- [Core Concepts](#core-concepts)
+  - [1. Operation ID (Stable, Idempotent)](#1-operation-id-stable-idempotent)
+  - [2. Typed Waiting States](#2-typed-waiting-states)
+  - [3. Idempotent Poll Semantics](#3-idempotent-poll-semantics)
+  - [4. Cancellation Signaling](#4-cancellation-signaling)
+  - [5. Resume Receipt (Partial Progress)](#5-resume-receipt-partial-progress)
+    - [5.1 Resume Receipt Structure](#51-resume-receipt-structure)
+    - [5.2 Examples](#52-examples)
+    - [5.3 State Transitions with Sub-steps](#53-state-transitions-with-sub-steps)
+    - [5.4 Recovery Patterns](#54-recovery-patterns)
+- [Implementation: cowork-to-code-bridge](#implementation-cowork-to-code-bridge)
+- [Design Decisions](#design-decisions)
+- [Usage Patterns](#usage-patterns)
+- [Guarantees & Trade-offs](#guarantees--trade-offs)
+- [Extensibility](#extensibility)
+- [Comparison: Other Frameworks](#comparison-other-frameworks)
+- [Testing Strategy](#testing-strategy)
+- [Production Safety: Metrics & Loop Detection](#production-safety-metrics--loop-detection)
+- [Spec Compliance](#spec-compliance)
+- [Reference Implementation](#reference-implementation)
+
+---
+
 ## Core Concepts
 
 ### 1. Operation ID (Stable, Idempotent)
@@ -177,35 +202,311 @@ Operations can be cancelled if the caller changes its mind.
 
 ### 5. Resume Receipt (Partial Progress)
 
-When an operation is paused or interrupted, the resume receipt captures enough state to resume.
+When an operation is paused or interrupted, the **resume receipt** captures enough
+state to resume from where execution stopped — rather than restarting from scratch.
 
-**Pattern:**
+Every operation is seeded with an empty resume receipt at `escalate_to_claude` time,
+and `get_operation_status` always returns a **complete, normalized** receipt (every
+field present, even on legacy state). The receipt has two first-class collections:
+
+- **`sub_steps`** — the execution phases the operation moved through (e.g.
+  `generating` → `testing` → `debugging`), each timestamped and checkpointed.
+- **`artifacts`** — the concrete files/code the operation produced, so a resuming
+  agent knows what already exists on disk and need not recreate it.
+
+**Use cases:**
+- Agent disconnects mid-operation → resume from the last incomplete sub-step
+- Timeout on first try → resume with the generated artifacts intact
+- Multi-stage workflows → pause between stages, audit progress, then continue
+- Loop / budget kill → inspect which sub-step burned the budget before retrying
+
+#### 5.1 Resume Receipt Structure
+
+Full TypeScript schema as returned by `get_operation_status`:
+
+```typescript
+interface ResumeReceipt {
+  /** Opaque id of the most recent checkpoint; null until first checkpoint. */
+  checkpoint_id: string | null;
+
+  /** Free-form context the resuming agent needs (cwd, branch, vars, ...). */
+  context: Record<string, any>;
+
+  /** Ordered execution phases. Append-only; the last entry is the live phase. */
+  sub_steps: SubStep[];
+
+  /** Files / code produced so far. A resuming agent can trust these exist. */
+  artifacts: Artifact[];
+
+  /** True when `resume_from` points at an actionable, incomplete sub-step. */
+  can_resume: boolean;
+
+  /** Name of the sub-step to resume at; null when nothing to resume. */
+  resume_from: string | null;
+}
+
+interface SubStep {
+  /** Phase name, e.g. "generating" | "testing" | "debugging". */
+  name: string;
+
+  /** Lifecycle of this phase. */
+  status: "started" | "completed" | "failed";
+
+  /** Wall-clock duration once finished; null while still "started". */
+  duration_ms: number | null;
+
+  /** Phase-local checkpoint payload (counts, cursors, partial output). */
+  checkpoint_data: Record<string, any>;
+}
+
+interface Artifact {
+  /** Path relative to the operation's working directory. */
+  path: string;
+
+  /** Artifact kind, e.g. "python" | "markdown" | "diff" | "binary". */
+  type: string;
+
+  /** Size in bytes (null if not yet flushed to disk). */
+  size: number | null;
+
+  /** Unix timestamp (seconds) when the artifact was last written. */
+  timestamp: number | null;
+}
+```
+
+**Field contracts:**
+
+| Field | Guarantee |
+|---|---|
+| `sub_steps` | Append-only & ordered. At most one trailing `started` entry. |
+| `sub_steps[].status` | Transitions `started → completed` or `started → failed`. Never reopens. |
+| `artifacts` | Each `path` is unique; re-writing a path updates `size`/`timestamp` in place. |
+| `can_resume` | `true` ⟺ `resume_from` names an existing sub-step not yet `completed`. |
+| All fields | Always present in the `get_operation_status` response (back-filled if missing on disk). |
+
+#### 5.2 Examples
+
+**Example A — Test execution (mid-run, one suite failing):**
+
 ```json
 {
   "operation_id": "bridge_1718556000_a4f2c1_01",
   "status": "executing",
   "resume_receipt": {
-    "checkpoint_id": "chk_67890",
-    "context": {
-      "last_completed_step": "code_generation",
-      "generated_code": "def foo():\n  pass",
-      "test_results": {...}
-    },
-    "next_steps": [
-      "run_linter",
-      "run_tests",
-      "commit"
+    "checkpoint_id": "chk_tests_3of5",
+    "context": { "cwd": "/repo", "runner": "pytest", "seed": 1234 },
+    "sub_steps": [
+      { "name": "collect", "status": "completed", "duration_ms": 320,
+        "checkpoint_data": { "tests_found": 48 } },
+      { "name": "run_unit", "status": "completed", "duration_ms": 8400,
+        "checkpoint_data": { "passed": 42, "failed": 0 } },
+      { "name": "run_integration", "status": "failed", "duration_ms": 15200,
+        "checkpoint_data": { "passed": 4, "failed": 1, "failing": "test_api_health" } }
+    ],
+    "artifacts": [
+      { "path": ".pytest_cache/lastfailed", "type": "json", "size": 64,
+        "timestamp": 1718556180 },
+      { "path": "junit-report.xml", "type": "xml", "size": 9120,
+        "timestamp": 1718556181 }
     ],
     "can_resume": true,
-    "resume_from": "run_linter"
+    "resume_from": "run_integration"
   }
 }
 ```
 
-**Use cases:**
-- Agent disconnects mid-operation → resume from checkpoint
-- Timeout on first try → resume with context
-- Multi-stage workflows → pause between stages
+**Example B — Code generation (paused after writing source, before tests):**
+
+```json
+{
+  "operation_id": "bridge_1718556100_b7e3d2_01",
+  "status": "executing",
+  "resume_receipt": {
+    "checkpoint_id": "chk_codegen_done",
+    "context": { "cwd": "/repo", "language": "python", "module": "parser" },
+    "sub_steps": [
+      { "name": "design", "status": "completed", "duration_ms": 2100,
+        "checkpoint_data": { "approach": "recursive-descent" } },
+      { "name": "generating", "status": "completed", "duration_ms": 4200,
+        "checkpoint_data": { "lines_written": 120, "functions": 6 } },
+      { "name": "testing", "status": "started", "duration_ms": null,
+        "checkpoint_data": { "harness": "pytest", "written": false } }
+    ],
+    "artifacts": [
+      { "path": "parser.py", "type": "python", "size": 3120,
+        "timestamp": 1718556140 }
+    ],
+    "can_resume": true,
+    "resume_from": "testing"
+  }
+}
+```
+
+**Example C — Debugging workflow (iterating on a fix):**
+
+```json
+{
+  "operation_id": "bridge_1718556200_c9f1a4_01",
+  "status": "executing",
+  "resume_receipt": {
+    "checkpoint_id": "chk_debug_iter2",
+    "context": { "cwd": "/repo", "bug": "off-by-one in tokenizer", "branch": "fix/tok" },
+    "sub_steps": [
+      { "name": "reproduce", "status": "completed", "duration_ms": 1500,
+        "checkpoint_data": { "repro": "test_tokenize_empty" } },
+      { "name": "diagnose", "status": "completed", "duration_ms": 3300,
+        "checkpoint_data": { "root_cause": "loop bound uses <= not <" } },
+      { "name": "patch", "status": "completed", "duration_ms": 900,
+        "checkpoint_data": { "hunk": "tokenizer.py:88" } },
+      { "name": "verify", "status": "started", "duration_ms": null,
+        "checkpoint_data": { "iteration": 2, "last_result": "1 failing" } }
+    ],
+    "artifacts": [
+      { "path": "tokenizer.py", "type": "python", "size": 5400,
+        "timestamp": 1718556260 },
+      { "path": "fix.diff", "type": "diff", "size": 412,
+        "timestamp": 1718556261 }
+    ],
+    "can_resume": true,
+    "resume_from": "verify"
+  }
+}
+```
+
+#### 5.3 State Transitions with Sub-steps
+
+The operation-level status (§2) is the outer state machine. Within `executing`,
+the `sub_steps` array is an inner, append-only timeline. Each sub-step runs its own
+`started → completed | failed` lifecycle:
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued
+    queued --> executing : agent picks up
+
+    state executing {
+        [*] --> generating
+        generating --> testing : sub_step completed
+        testing --> debugging : failure found
+        debugging --> testing : retry
+        testing --> [*] : all green
+
+        generating : generating\n(started → completed)
+        testing : testing\n(started → completed/failed)
+        debugging : debugging\n(started → completed)
+    }
+
+    executing --> completed : final sub_step completed
+    executing --> error : sub_step failed (unrecoverable)
+    executing --> cancelled : cancel_operation
+    completed --> [*]
+    error --> [*]
+    cancelled --> [*]
+```
+
+ASCII rendering of the inner sub-step timeline (what `resume_from` points at):
+
+```
+status = executing
+                                                     can_resume = true
+  ┌────────────┐   ┌────────────┐   ┌────────────┐   resume_from ─┐
+  │ generating │──▶│  testing   │──▶│ debugging  │ ◀──────────────┘
+  │ completed  │   │ completed  │   │  started   │  ← live phase
+  │ 4200 ms    │   │ 1800 ms    │   │   (—)      │
+  └────────────┘   └────────────┘   └────────────┘
+        │                │                 │
+     artifact         artifact          (in-flight)
+    parser.py       test_parser.py
+```
+
+On resume, the agent reads the receipt, skips every `completed` sub-step, trusts the
+listed `artifacts` already exist, and re-enters at `resume_from`.
+
+#### 5.4 Recovery Patterns
+
+**Resume from the first incomplete sub-step:**
+
+```python
+def resume(mcp, operation_id):
+    status = mcp.call_tool("get_operation_status", {"operation_id": operation_id})
+    receipt = status["resume_receipt"]
+
+    if not receipt["can_resume"]:
+        return status  # nothing to resume — already done or never started
+
+    # Everything completed is trusted; pick up at the live/failed phase.
+    done = {s["name"] for s in receipt["sub_steps"] if s["status"] == "completed"}
+    existing = {a["path"] for a in receipt["artifacts"]}
+
+    return mcp.call_tool("escalate_to_claude", {
+        "request": (
+            f"Resume operation {operation_id} at step '{receipt['resume_from']}'. "
+            f"Already completed: {sorted(done)}. "
+            f"Existing artifacts (do not recreate): {sorted(existing)}. "
+            f"Context: {receipt['context']}"
+        ),
+        "operation_id": operation_id,   # same id = resume, not a new op
+        "wait_seconds": 300,
+    })
+```
+
+**Retry only the failed sub-step (leave completed work untouched):**
+
+```python
+def retry_failed_substep(mcp, operation_id, max_attempts=3):
+    for attempt in range(max_attempts):
+        status = mcp.call_tool("get_operation_status", {"operation_id": operation_id})
+        receipt = status["resume_receipt"]
+        failed = [s for s in receipt["sub_steps"] if s["status"] == "failed"]
+        if not failed:
+            return status  # no failures left
+
+        step = failed[-1]
+        mcp.call_tool("escalate_to_claude", {
+            "request": (
+                f"Re-run failed step '{step['name']}'. "
+                f"Last checkpoint: {step['checkpoint_data']}. "
+                f"Attempt {attempt + 1}/{max_attempts}."
+            ),
+            "operation_id": operation_id,
+            "wait_seconds": 180,
+        })
+    raise RuntimeError(f"{operation_id}: step still failing after {max_attempts} attempts")
+```
+
+**MCP client: poll, surface progress, and act on the receipt:**
+
+```python
+import time
+
+def run_with_progress(mcp, request, poll_every=30, deadline_s=1800):
+    # Fire and forget — get an operation_id back immediately.
+    op = mcp.call_tool("escalate_to_claude", {"request": request, "wait_seconds": 0})
+    operation_id = op["operation_id"]
+
+    end = time.time() + deadline_s
+    while time.time() < end:
+        status = mcp.call_tool("get_operation_status", {"operation_id": operation_id})
+        receipt = status["resume_receipt"]
+
+        # Human-readable progress from sub_steps.
+        for s in receipt["sub_steps"]:
+            mark = {"completed": "✓", "failed": "✗", "started": "…"}[s["status"]]
+            dur = f"{s['duration_ms']}ms" if s["duration_ms"] is not None else "—"
+            print(f"  {mark} {s['name']} ({dur})")
+
+        if status["status"] == "completed":
+            return status["result"]
+        if status["status"] == "error":
+            # Hand the receipt to a recovery routine instead of failing hard.
+            return resume(mcp, operation_id)
+
+        time.sleep(poll_every)
+
+    # Deadline hit — checkpoint is on disk; caller can resume later by id.
+    print(f"Deadline hit; resume later with operation_id={operation_id}")
+    return resume(mcp, operation_id)
+```
 
 ---
 
@@ -317,15 +618,30 @@ results/
   "resume_receipt": {
     "checkpoint_id": "chk_67890",
     "context": {
-      "tests_passed": 4,
-      "tests_failed": 0,
       "current_test": "test_api_health"
     },
+    "sub_steps": [
+      { "name": "collect", "status": "completed", "duration_ms": 320,
+        "checkpoint_data": { "tests_found": 6 } },
+      { "name": "run_tests", "status": "started", "duration_ms": null,
+        "checkpoint_data": { "tests_passed": 4, "tests_failed": 0 } }
+    ],
+    "artifacts": [
+      { "path": "junit-report.xml", "type": "xml", "size": 9120,
+        "timestamp": 1718556045 }
+    ],
     "can_resume": true,
-    "resume_from": "test_5"
+    "resume_from": "run_tests"
   }
 }
 ```
+
+> **Initialization:** `escalate_to_claude` seeds `resume_receipt` with empty
+> `sub_steps`/`artifacts` (and `can_resume: false`). The executing agent appends to
+> these as it works. `get_operation_status` always returns a fully-normalized receipt
+> — operation state written before these fields existed is back-filled on read, so
+> new fields are strictly additive and backward compatible. See
+> `_build_resume_receipt` in `cowork_to_code_bridge/mcp_server.py`.
 
 ---
 
