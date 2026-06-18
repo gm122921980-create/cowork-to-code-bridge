@@ -80,7 +80,88 @@ list (empty if none). Safe to poll.
 
 ---
 
-## 4. When to use each
+## 4. MODEL ROUTING — Mandatory Complexity Declaration
+
+**Every task requires an explicit `model_preference` parameter.** This is not optional.
+The bridge routes to the right Claude model tier (Haiku, Sonnet, Opus, Fabo) based on
+task complexity. You declare the tier; the bridge handles cascading fallbacks if needed.
+
+### Why mandatory?
+
+- **Token efficiency**: Use the cheapest model that handles the task. Haiku for quick
+  lookups, Sonnet for standard work, Opus for complex reasoning.
+- **Cost transparency**: You control what gets sent where. Every routed task records
+  which model was selected and why.
+- **Audit trail**: Full history of routing decisions for cost tracking and learning.
+
+### How to use it
+
+```python
+from cowork_to_code_bridge.model_router import route_task
+
+# Explicit model preference — MANDATORY
+result = route_task(
+    "scripts/analyze.sh",
+    args=["quarterly_data.csv"],
+    model_preference="sonnet",    # ← REQUIRED: "haiku", "sonnet", "opus", or "fabo"
+    fallback_strategy="cascade_up"  # optional: cascade up/down if preferred model unavailable
+)
+
+print(f"Routed to: {result['selected_model']}")
+print(f"Fallback used: {result['fallback_used']}")
+```
+
+### Model tiers (cost ↔ capability)
+
+| Tier   | Best for                              | Tokens    |
+|--------|---------------------------------------|-----------|
+| Haiku  | Quick lookups, formatting, simple tasks | minimal   |
+| Sonnet | Standard work, moderate complexity     | moderate  |
+| Opus   | Complex reasoning, planning, analysis  | higher    |
+| Fabo   | Frontier reasoning (future)            | highest   |
+
+### Fallback strategies
+
+- **`cascade_up`** (default): if preferred unavailable, try higher tiers. Haiku → Sonnet → Opus → Fabo.
+- **`cascade_down`**: if preferred unavailable, try lower tiers. Opus → Sonnet → Haiku.
+- **`fail_fast`**: no fallback; error if preferred tier unavailable.
+
+### What the router tracks
+
+Each routed task stores a routing decision record:
+
+```python
+{
+  "requested_model": "haiku",           # what you asked for
+  "selected_model": "sonnet",           # what was actually used (may differ if fallback)
+  "fallback_strategy": "cascade_up",    # how to handle unavailability
+  "cascade_order": [...],               # full list of tiers to try
+  "fallback_used": true,                # did we fall back?
+  "attempted_models": ["haiku","sonnet"], # which models were tried
+  "ts_routed": 1716067200               # when the decision was made
+}
+```
+
+Retrieve routing metadata later:
+
+```python
+from cowork_to_code_bridge.model_router import get_routing_metadata
+metadata = get_routing_metadata(task_id, bridge_root=...)
+print(f"Cost: {metadata['selected_model']}")
+```
+
+### Errors if you forget
+
+Missing `model_preference` raises `ValueError`:
+
+```
+model_preference is MANDATORY. Specify 'haiku', 'sonnet', 'opus', or 'fabo'.
+See BRIDGE_INIT.md for routing requirements.
+```
+
+---
+
+## 6. When to use each
 
 | Goal                                 | Use                                |
 |--------------------------------------|------------------------------------|
@@ -89,10 +170,11 @@ list (empty if none). Safe to poll.
 | Avoid duplicate runs on retry        | `queue_task(idempotency_key=...)`  |
 | Machine reports progress to Cowork    | `post_message_to_cowork`           |
 | Cowork reads machine updates          | `detect_messages_from_claude_code` |
+| Token-efficient model selection      | `route_task(model_preference=...)`  |
 
 ---
 
-## 5. Async vs blocking
+## 7. Async vs blocking
 
 | | Blocking (`call_remote`) | Async (`queue_task` → `poll_task_result`) |
 |---|---|---|
@@ -104,7 +186,7 @@ list (empty if none). Safe to poll.
 
 ---
 
-## 6. Idempotency guarantees
+## 8. Idempotency guarantees
 
 - `poll_task_result` and `detect_messages_from_claude_code` are **pure reads** —
   call as often as you like.
@@ -115,7 +197,7 @@ list (empty if none). Safe to poll.
 
 ---
 
-## 7. Common usage patterns
+## 9. Common usage patterns
 
 **Blocking — run tests:**
 ```python
@@ -142,9 +224,29 @@ for m in detect_messages_from_claude_code(parent_task_id=job["task_id"]):
     print(m["type"], m["content"])
 ```
 
+**Model routing — token-efficient task execution:**
+```python
+from cowork_to_code_bridge.model_router import route_task, get_routing_metadata
+
+# Route to appropriate model tier (MANDATORY model_preference)
+result = route_task(
+    "scripts/analyze_quarterly_report.sh",
+    args=["Q2_2026.pdf"],
+    model_preference="opus",         # High complexity: reasoning + analysis
+    fallback_strategy="cascade_up"   # Try Opus, then Fabo if unavailable
+)
+
+# Check which model was actually used
+print(f"Used {result['selected_model']} (requested {result['requested_model']})")
+
+# Later: audit the routing decision
+metadata = get_routing_metadata(result["task_id"])
+print(f"Cost optimized: {metadata['selected_model']} (fallback: {metadata['fallback_used']})")
+```
+
 ---
 
-## 8. Best practices
+## 10. Best practices
 
 - Prefer **`queue_task`** for anything slow; never block your sandbox on a long job.
 - Always pass an **`idempotency_key`** for state-changing work (deploys,
