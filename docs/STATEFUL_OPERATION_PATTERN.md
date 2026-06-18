@@ -548,6 +548,116 @@ Complex operations can spawn child operations (tree structure):
 
 ---
 
+---
+
+## Production Safety: Metrics & Loop Detection
+
+For production crews (e.g., CrewAI running on cloud infrastructure), the pattern includes built-in safeguards to prevent runaway operations.
+
+### Per-Operation Metrics
+
+Every operation state file includes:
+
+```json
+{
+  "operation_id": "bridge_1718556000_a4f2c1_01",
+  "status": "executing",
+  "metrics": {
+    "tool_calls": 12,
+    "tool_call_log": [
+      {"tool": "search_docs", "args": {...}, "ts": 1718556010},
+      {"tool": "search_docs", "args": {...}, "ts": 1718556011},
+      {"tool": "search_docs", "args": {...}, "ts": 1718556012}
+    ],
+    "api_spend_estimate": 0.24,
+    "memory_mb": 256,
+    "cpu_percent": 18
+  }
+}
+```
+
+**`get_operation_status` response includes metrics:**
+
+```json
+{
+  "operation_id": "bridge_1718556000_a4f2c1_01",
+  "status": "executing",
+  "progress": {...},
+  "metrics": {
+    "tool_calls": 12,
+    "api_spend_estimate": 0.24,
+    "memory_mb": 256,
+    "cpu_percent": 18,
+    "repeated_calls": {
+      "search_docs": 3
+    }
+  },
+  "quota": {...}
+}
+```
+
+### Loop Detection
+
+The MCP server automatically detects infinite retry patterns:
+
+- **Repeated calls:** Same tool invoked 3+ times with identical arguments
+- **Same error:** Error thrown repeatedly without progress
+- **Resource exhaustion:** Memory or CPU exceeding thresholds
+
+**How crews respond:**
+
+```python
+# Check metrics during execution
+status = mcp.call_tool("get_operation_status", {"operation_id": op_id})
+
+if status["metrics"]["repeated_calls"]:
+    # Infinite loop detected
+    print(f"Loop detected: {status['metrics']['repeated_calls']}")
+    mcp.call_tool("cancel_operation", {
+        "operation_id": op_id,
+        "reason": f"Loop detected in {list(status['metrics']['repeated_calls'].keys())[0]}"
+    })
+
+if status["metrics"]["api_spend_estimate"] > budget_limit:
+    # Budget exceeded
+    mcp.call_tool("cancel_operation", {
+        "operation_id": op_id,
+        "reason": f"Budget exceeded: ${status['metrics']['api_spend_estimate']:.2f}"
+    })
+```
+
+### Recording Metrics (Agent Responsibility)
+
+Claude Code agents populate metrics during execution:
+
+1. **After each tool call:** Append to `tool_call_log` with tool name, args, timestamp
+2. **Periodically:** Update `cpu_percent`, `memory_mb` from system stats
+3. **On completion:** Calculate final `api_spend_estimate` (tokens × rate)
+
+Example (pseudo-code in Claude Code):
+
+```python
+# During operation execution
+op_state = json.load(f"{operation_id}.json")
+
+# Record a tool call
+op_state["metrics"]["tool_call_log"].append({
+    "tool": "search_docs",
+    "args": {"query": "authentication"},
+    "ts": time.time()
+})
+op_state["metrics"]["tool_calls"] += 1
+
+# Update resource metrics
+op_state["metrics"]["memory_mb"] = get_memory_usage()
+op_state["metrics"]["cpu_percent"] = get_cpu_usage()
+
+# Write back
+json.dump(op_state, f"{operation_id}.json")
+```
+
+---
+
 ## Spec Compliance
 
 This pattern extends the **MCP v1.0 specification** (as of June 2026):

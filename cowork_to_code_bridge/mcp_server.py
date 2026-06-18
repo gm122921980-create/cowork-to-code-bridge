@@ -281,6 +281,26 @@ class MCPServer:
         tmp.write_text(json.dumps(payload))
         tmp.rename(request_file)
 
+        # Initialize operation state with metrics tracking
+        ops_dir = self.bridge_root / "operations"
+        ops_dir.mkdir(parents=True, exist_ok=True)
+        op_file = ops_dir / f"{request_id}.json"
+        op_state = {
+            "operation_id": request_id,
+            "status": "queued",
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "request": request,
+            "metrics": {
+                "tool_calls": 0,
+                "tool_call_log": [],
+                "api_spend_estimate": 0.0,
+                "memory_mb": 0,
+                "cpu_percent": 0,
+            },
+        }
+        op_file.write_text(json.dumps(op_state))
+
         # Poll for reply
         replies = self.bridge_root / "cowork_results"
         replies.mkdir(parents=True, exist_ok=True)
@@ -364,6 +384,37 @@ class MCPServer:
 
         return {"scripts": scripts}
 
+    def _extract_metrics(self, op_state: dict[str, Any]) -> dict[str, Any]:
+        """Extract metrics from operation state, including loop detection."""
+        metrics = op_state.get("metrics", {})
+
+        # Calculate derived metrics
+        tool_calls = metrics.get("tool_calls", 0)
+        tool_call_log = metrics.get("tool_call_log", [])
+
+        # Loop detection: find repeated tools with same args
+        repeated_calls = {}
+        if tool_call_log:
+            call_counts = {}
+            for call in tool_call_log:
+                key = (call.get("tool"), json.dumps(call.get("args", {}), sort_keys=True))
+                count = call_counts.get(key, 0) + 1
+                call_counts[key] = count
+                if count >= 3:
+                    tool_name = call.get("tool", "unknown")
+                    repeated_calls[tool_name] = count
+
+        # Estimate API spend (simplified: 3 calls per operation at ~$0.02 each)
+        api_spend_estimate = metrics.get("api_spend_estimate", tool_calls * 0.0067)
+
+        return {
+            "tool_calls": tool_calls,
+            "api_spend_estimate": round(api_spend_estimate, 4),
+            "memory_mb": metrics.get("memory_mb", 0),
+            "cpu_percent": metrics.get("cpu_percent", 0),
+            "repeated_calls": repeated_calls if repeated_calls else None,
+        }
+
     def _tool_get_status(self, args: dict[str, Any]) -> dict[str, Any]:
         """Tool: get_operation_status — check status of escalation operation."""
         operation_id = args.get("operation_id", "")
@@ -396,19 +447,26 @@ class MCPServer:
                 "quota": self._get_quota(),
             }
 
-        # Check if result file exists but unfinished
+        # Check operation state (executing or paused)
         ops_dir = self.bridge_root / "operations"
         op_file = ops_dir / f"{operation_id}.json"
         if op_file.exists():
             try:
                 op_state = json.loads(op_file.read_text())
-                return {
+                response = {
                     "operation_id": operation_id,
                     "status": op_state.get("status", "executing"),
                     "progress": op_state.get("progress"),
                     "resume_receipt": op_state.get("resume_receipt"),
                     "quota": self._get_quota(),
                 }
+
+                # Include metrics if available (for loop detection + resource tracking)
+                if "metrics" in op_state or "tool_call_log" in op_state:
+                    metrics = self._extract_metrics(op_state)
+                    response["metrics"] = metrics
+
+                return response
             except json.JSONDecodeError:
                 pass
 
