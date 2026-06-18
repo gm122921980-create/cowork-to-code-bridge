@@ -39,6 +39,17 @@ from typing import Any
 # Lives in the ephemeral bridge state dir (gitignored), never in the repo.
 MARKER_NAME = ".bridge_initialized"
 
+# Sub-directory under BRIDGE_ROOT holding one marker file per interface that has
+# been initialized (e.g. .initialized/cowork, .initialized/ci-cd). Distinct from
+# the single global MARKER_NAME above, which tracks the legacy machine-wide intro.
+INITIALIZED_DIR = ".initialized"
+
+# Canonical set of interfaces the bridge knows how to introduce itself to.
+# detect_caller_interface() returns one of these, or "unknown" for callers it
+# can't fingerprint. Order matters: detection checks the most specific markers
+# first so an ambiguous caller resolves to the narrowest match.
+INTERFACES = ("cowork", "claude-code", "hermes", "ci-cd", "script", "unknown")
+
 
 def _resolve_bridge_root(bridge_root: Path | str | None = None) -> Path:
     """Find the bridge directory, matching client.py's resolution order.
@@ -145,10 +156,400 @@ def get_initialization_message() -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Interface-aware initialization
+# --------------------------------------------------------------------------- #
+
+
+def detect_caller_interface(env: dict[str, str] | None = None) -> str:
+    """Identify which kind of system is connecting to the bridge.
+
+    Returns one of INTERFACES: "cowork", "claude-code", "hermes", "ci-cd",
+    "script", or "unknown". Pure and non-blocking — inspects environment
+    variables only (defaulting to os.environ), never the filesystem or network.
+
+    Detection is ordered most-specific-first so an ambiguous caller resolves to
+    the narrowest match:
+
+      1. CI/CD      — GITHUB_ACTIONS / GITLAB_CI / generic CI markers. Checked
+                      first because a CI runner may *also* set BRIDGE_ROOT, and
+                      its calling pattern (idempotent queue + poll) is the one
+                      that matters there.
+      2. Hermes / external agents — explicit BRIDGE_CALLER / BRIDGE_USER_AGENT
+                      identity headers the caller stamps on itself.
+      3. Cowork     — BRIDGE_ROOT plus a Cowork/sandbox marker.
+      4. Claude Code — BRIDGE_ROOT in a local (non-sandbox) execution context.
+      5. script     — direct daemon access with no rich identity, but a bridge
+                      dir is reachable.
+      6. unknown    — nothing recognizable.
+
+    Args:
+        env: Environment mapping to inspect. Defaults to os.environ. Pass an
+            explicit dict to simulate a caller in tests.
+    """
+    e = os.environ if env is None else env
+
+    # 1. CI/CD — wins even if BRIDGE_ROOT is also set.
+    ci_markers = ("GITHUB_ACTIONS", "GITLAB_CI", "CIRCLECI", "BUILDKITE",
+                  "JENKINS_URL", "TRAVIS")
+    if any(_truthy(e.get(m)) for m in ci_markers) or _truthy(e.get("CI")):
+        return "ci-cd"
+
+    # 2. Explicit self-identification from external agents / future systems.
+    caller = (e.get("BRIDGE_CALLER") or e.get("BRIDGE_USER_AGENT") or "").strip().lower()
+    if caller:
+        if "hermes" in caller:
+            return "hermes"
+        if "cowork" in caller:
+            return "cowork"
+        if "claude-code" in caller or "claude_code" in caller:
+            return "claude-code"
+        if caller in INTERFACES:
+            return caller
+
+    has_bridge_root = bool(e.get("BRIDGE_ROOT"))
+
+    # 3. Cowork sandbox — BRIDGE_ROOT plus a sandbox fingerprint.
+    cowork_markers = ("COWORK", "COWORK_SESSION", "COWORK_SESSION_ID",
+                      "SANDBOX", "ANTHROPIC_SANDBOX")
+    if has_bridge_root and any(_truthy(e.get(m)) for m in cowork_markers):
+        return "cowork"
+
+    # 4. Claude Code — local execution context with the bridge wired up.
+    if _truthy(e.get("CLAUDE_CODE")) or _truthy(e.get("CLAUDECODE")):
+        return "claude-code"
+
+    # 5. Bridge reachable but no rich identity → a direct/script caller.
+    if has_bridge_root:
+        return "script"
+
+    return "unknown"
+
+
+def _truthy(value: str | None) -> bool:
+    """True if an env-var string is set to anything other than a falsey token."""
+    if value is None:
+        return False
+    return value.strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def get_initialization_for_interface(interface: str) -> dict[str, Any]:
+    """Return tailored initialization knowledge for one interface.
+
+    Each interface gets the capability subset and call-pattern examples that
+    matter for how *it* talks to the bridge. Unknown / unrecognized interfaces
+    fall back to a minimal interface spec that any system can bootstrap from.
+
+    Pure function — no side effects.
+
+    Returns a dict with keys:
+      interface (str)        the resolved interface name (echoes input, or
+                             "unknown" if not recognized)
+      title (str)            short human label
+      summary (str)          one-line description of what this caller is
+      capabilities (list)    the functions/patterns relevant to this caller
+      examples (str)         copy-pasteable example matching its calling pattern
+      format (str)           the natural response format: "markdown", "cli",
+                             or "structured"
+    """
+    key = interface if interface in _INTERFACE_KB else "unknown"
+    # Return a copy so callers can mutate freely without corrupting the table.
+    kb = _INTERFACE_KB[key]
+    return {
+        "interface": key,
+        "title": kb["title"],
+        "summary": kb["summary"],
+        "capabilities": list(kb["capabilities"]),
+        "examples": kb["examples"],
+        "format": kb["format"],
+    }
+
+
+def mark_interface_initialized(
+    interface: str, bridge_root: Path | str | None = None
+) -> dict[str, Any]:
+    """Record that one interface has been initialized.
+
+    Creates ``BRIDGE_ROOT/.initialized/{interface}``. Idempotent: a pre-existing
+    marker is left untouched and its original timestamp preserved. Writes are
+    atomic (temp-then-rename). Unknown interface names are normalized to
+    "unknown" so a marker file is never created from arbitrary caller input.
+
+    Args:
+        interface: One of INTERFACES (others collapse to "unknown").
+        bridge_root: Override the auto-detected bridge directory.
+
+    Returns:
+        Dict with keys: interface, initialized (bool, always True),
+        already_initialized (bool), marker_path (str), ts (float).
+    """
+    key = interface if interface in INTERFACES else "unknown"
+    root = _resolve_bridge_root(bridge_root)
+    init_dir = root / INITIALIZED_DIR
+    init_dir.mkdir(parents=True, exist_ok=True)
+    marker = init_dir / key
+
+    if marker.exists():
+        try:
+            existing = json.loads(marker.read_text())
+            ts = float(existing.get("ts", 0.0))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            ts = 0.0
+        return {
+            "interface": key,
+            "initialized": True,
+            "already_initialized": True,
+            "marker_path": str(marker),
+            "ts": ts,
+        }
+
+    ts = time.time()
+    payload = {"interface": key, "initialized": True, "ts": ts, "version": _INIT_VERSION}
+    tmp = marker.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload))
+    tmp.rename(marker)
+
+    return {
+        "interface": key,
+        "initialized": True,
+        "already_initialized": False,
+        "marker_path": str(marker),
+        "ts": ts,
+    }
+
+
+def is_interface_initialized(
+    interface: str, bridge_root: Path | str | None = None
+) -> bool:
+    """True if this interface already has an .initialized/{interface} marker.
+
+    Idempotent, read-only counterpart to mark_interface_initialized(). Lets a
+    caller skip re-serving init knowledge to a system it has already greeted.
+    """
+    key = interface if interface in INTERFACES else "unknown"
+    root = _resolve_bridge_root(bridge_root)
+    return (root / INITIALIZED_DIR / key).exists()
+
+
+def serve_init_response(
+    interface: str | None = None,
+    *,
+    bridge_root: Path | str | None = None,
+    mark: bool = False,
+    env: dict[str, str] | None = None,
+) -> str:
+    """Produce the right initialization payload for a caller, in its native format.
+
+    This is the one-call entry point a daemon (or any dispatcher) uses to answer
+    "who's connecting and what should I tell them?":
+
+      - interface=None → auto-detect via detect_caller_interface(env).
+      - LLM-ish callers (cowork, claude-code, hermes) get **Markdown** — a
+        readable capability reference to load into context.
+      - script callers get a **concise CLI/plaintext** cheat-sheet.
+      - ci-cd and unknown/custom systems get **structured JSON** that's trivial
+        to parse programmatically.
+
+    Args:
+        interface: Force a specific interface; auto-detect when None.
+        bridge_root: Override the bridge directory (only used when mark=True).
+        mark: When True, also call mark_interface_initialized() as a side effect
+            so subsequent connections can be skipped. Default False (pure read).
+        env: Environment mapping for auto-detection. Defaults to os.environ.
+
+    Returns:
+        A string: Markdown, a CLI cheat-sheet, or a JSON document, depending on
+        the interface's natural format.
+    """
+    resolved = interface if interface in INTERFACES else (
+        detect_caller_interface(env) if interface is None else "unknown"
+    )
+    kb = get_initialization_for_interface(resolved)
+
+    if mark:
+        mark_interface_initialized(resolved, bridge_root=bridge_root)
+
+    fmt = kb["format"]
+    if fmt == "structured":
+        return json.dumps(kb, indent=2)
+    if fmt == "cli":
+        return _render_cli(kb)
+    return _render_markdown(kb)
+
+
+def _render_markdown(kb: dict[str, Any]) -> str:
+    lines = [
+        f"# {kb['title']} — Bridge Initialization",
+        "",
+        kb["summary"],
+        "",
+        "## Relevant capabilities",
+    ]
+    lines += [f"- {c}" for c in kb["capabilities"]]
+    lines += ["", "## Example", "", "```python", kb["examples"].rstrip(), "```"]
+    return "\n".join(lines) + "\n"
+
+
+def _render_cli(kb: dict[str, Any]) -> str:
+    lines = [
+        f"{kb['title']} — bridge init",
+        kb["summary"],
+        "",
+        "Capabilities:",
+    ]
+    lines += [f"  - {c}" for c in kb["capabilities"]]
+    lines += ["", "Example:", kb["examples"].rstrip()]
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------- #
 # Static content
 # --------------------------------------------------------------------------- #
 
 _INIT_VERSION = 1
+
+# Per-interface knowledge base. Each entry is the tailored subset of bridge
+# capability that matters to that caller, plus an example matching how that
+# caller actually invokes the bridge, and the response format it prefers.
+_INTERFACE_KB: dict[str, dict[str, Any]] = {
+    "cowork": {
+        "title": "Claude Cowork (cloud sandbox)",
+        "summary": (
+            "You're a Cowork session with a short-lived sandbox. Favor async: "
+            "queue work, return, and poll on a later turn so long jobs survive "
+            "your timeout. Use bidirectional messaging to stream progress."
+        ),
+        "capabilities": [
+            "queue_task(script, ...) — fire-and-forget; returns task_id",
+            "poll_task_result(task_id) — idempotent status/result check",
+            "call_remote(script, ...) — blocking; only for quick (<30s) work",
+            "detect_messages_from_claude_code(parent_task_id=...) — read updates",
+            "Always pass idempotency_key for state-changing work",
+        ],
+        "examples": (
+            "from cowork_to_code_bridge.client import queue_task, poll_task_result\n"
+            "job = queue_task('scripts/build.sh', timeout=1800,\n"
+            "                 idempotency_key='build-main-2026-06-18')\n"
+            "# ... later turn ...\n"
+            "res = poll_task_result(job['task_id'])\n"
+            "if res['status'] == 'completed':\n"
+            "    print(res['exit_code'], res['stdout'])"
+        ),
+        "format": "markdown",
+    },
+    "claude-code": {
+        "title": "Claude Code (local machine)",
+        "summary": (
+            "You're Claude Code running on the user's own machine — the execution "
+            "side of the bridge. You have direct daemon access and full "
+            "capabilities, and you push updates back to Cowork."
+        ),
+        "capabilities": [
+            "Full daemon access — run any whitelisted script directly",
+            "call_remote / queue_task / poll_task_result available",
+            "post_message_to_cowork(type, content, parent_task_id=...) — push updates",
+            "Stream progress instead of going silent on long jobs",
+            "git / build / test / package-install on the real machine",
+        ],
+        "examples": (
+            "from cowork_to_code_bridge.client import post_message_to_cowork\n"
+            "post_message_to_cowork('progress', 'Build 40% complete',\n"
+            "                       parent_task_id=task_id)\n"
+            "# ... on completion ...\n"
+            "post_message_to_cowork('completed', 'Build succeeded', parent_task_id=task_id)"
+        ),
+        "format": "markdown",
+    },
+    "hermes": {
+        "title": "Hermes / External Agent",
+        "summary": (
+            "You're an external agent reaching the bridge over its MCP server. "
+            "Use MCP tools; messages follow the bridge's structured message "
+            "format (type + content + optional parent_task_id)."
+        ),
+        "capabilities": [
+            "Connect via the bridge MCP server (cowork_to_code_bridge.mcp_server)",
+            "MCP tools mirror the client: queue/poll/call/message",
+            "Message format: {type, content, parent_task_id?, request_id}",
+            "type ∈ {progress, completed, error, info}",
+            "Idempotent reads (poll/detect); pass idempotency_key on writes",
+        ],
+        "examples": (
+            "# Over MCP, invoke the bridge tools by name:\n"
+            "queue_task(script='scripts/run.sh', idempotency_key='hermes-job-1')\n"
+            "poll_task_result(task_id='...')\n"
+            "# Structured message back:\n"
+            "post_message_to_cowork(message_type='info', content='ack')"
+        ),
+        "format": "markdown",
+    },
+    "ci-cd": {
+        "title": "CI/CD System",
+        "summary": (
+            "You're an automated pipeline (GitHub Actions, GitLab CI, etc.). "
+            "Queue tasks idempotently and poll for status; never block a runner "
+            "on a long job, and make retries safe."
+        ),
+        "capabilities": [
+            "queue_task with a deterministic idempotency_key (e.g. commit SHA)",
+            "poll_task_result in a bounded loop until completed/timeout",
+            "Treat non-zero exit_code as pipeline failure",
+            "Retries are safe when idempotency_key is stable",
+        ],
+        "examples": (
+            "queue_task(script='scripts/deploy.sh',\n"
+            "           idempotency_key=f'deploy-{GIT_SHA}')\n"
+            "# poll until terminal:\n"
+            "while True:\n"
+            "    r = poll_task_result(task_id)\n"
+            "    if r['status'] in ('completed', 'unknown'): break"
+        ),
+        "format": "structured",
+    },
+    "script": {
+        "title": "Direct Script / Custom Caller",
+        "summary": (
+            "You're a raw script talking to the bridge filesystem directly, "
+            "without the Python client. Drop task files into queue/ and read "
+            "result files out of results/."
+        ),
+        "capabilities": [
+            "queue/  — write a JSON task file: {script, args, timeout, idempotency_key}",
+            "results/ — read JSON result: {task_id, status, exit_code, stdout, stderr}",
+            "to_cowork/ — machine→Cowork messages land here",
+            "Poll a result by reading results/<task_id>.json",
+            "BRIDGE_ROOT env var points at the shared directory",
+        ],
+        "examples": (
+            "# bash: queue a task and poll for its result\n"
+            "echo '{\"script\":\"scripts/run.sh\",\"timeout\":60}' \\\n"
+            "  > \"$BRIDGE_ROOT/queue/$(uuidgen).json\"\n"
+            "cat \"$BRIDGE_ROOT/results/<task_id>.json\""
+        ),
+        "format": "cli",
+    },
+    "unknown": {
+        "title": "Unknown / Future System",
+        "summary": (
+            "Minimal interface spec for an unrecognized caller. The bridge is a "
+            "file-based async RPC: write a task, poll for a result, both through "
+            "the shared BRIDGE_ROOT directory."
+        ),
+        "capabilities": [
+            "BRIDGE_ROOT holds queue/, results/, to_cowork/",
+            "Submit: write JSON {script, args?, timeout?, idempotency_key?} to queue/",
+            "Result: read JSON {task_id, status, exit_code, stdout, stderr} from results/",
+            "status ∈ {queued, running, completed, unknown}",
+            "All reads are side-effect-free; writes should carry idempotency_key",
+        ],
+        "examples": (
+            "task = {'script': 'scripts/run.sh', 'timeout': 60,\n"
+            "        'idempotency_key': 'my-unique-key'}\n"
+            "# write task to $BRIDGE_ROOT/queue/<id>.json\n"
+            "# read $BRIDGE_ROOT/results/<id>.json until status == 'completed'"
+        ),
+        "format": "structured",
+    },
+}
 
 _INIT_MESSAGE = """\
 🌉  Bridge connected for the first time.
