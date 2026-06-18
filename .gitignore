@@ -2,6 +2,7 @@
 queue/
 results/
 processed/
+.bridge_initialized
 *.log
 *.err
 .env
