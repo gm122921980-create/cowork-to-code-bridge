@@ -328,6 +328,7 @@ class MCPServer:
                     quota_after = self._get_quota()
                     return {
                         "status": "completed",
+                        "operation_id": request_id,
                         "result": reply,
                         "quota": quota_after,
                     }
@@ -338,6 +339,7 @@ class MCPServer:
 
         return {
             "status": "timeout",
+            "operation_id": request_id,
             "message": f"No reply within {wait_seconds}s. "
             "Claude Code (Cowork) may not be open. "
             f"Request queued at {request_file}.",

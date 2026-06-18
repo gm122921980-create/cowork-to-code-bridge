@@ -36,6 +36,9 @@ from cowork_to_code_bridge.bridge_init import (
         ({"BRIDGE_CALLER": "hermes-agent-7"}, "hermes"),
         ({"BRIDGE_USER_AGENT": "Cowork/1.0"}, "cowork"),
         ({"BRIDGE_CALLER": "claude-code"}, "claude-code"),
+        # Explicit caller that exactly names a known interface.
+        ({"BRIDGE_CALLER": "ci-cd"}, "ci-cd"),
+        ({"BRIDGE_CALLER": "script"}, "script"),
         # Cowork sandbox: BRIDGE_ROOT + sandbox fingerprint.
         ({"BRIDGE_ROOT": "/b", "COWORK_SESSION_ID": "abc"}, "cowork"),
         ({"BRIDGE_ROOT": "/b", "SANDBOX": "1"}, "cowork"),
@@ -123,6 +126,16 @@ def test_mark_is_idempotent_and_preserves_timestamp(tmp_path):
     second = mark_interface_initialized("ci-cd", bridge_root=tmp_path)
     assert second["already_initialized"] is True
     assert second["ts"] == first["ts"]
+
+
+def test_mark_tolerates_corrupt_interface_marker(tmp_path):
+    """A pre-existing but unparseable interface marker reports already-initialized."""
+    init_dir = tmp_path / INITIALIZED_DIR
+    init_dir.mkdir(parents=True)
+    (init_dir / "cowork").write_text("garbage{{{")
+    res = mark_interface_initialized("cowork", bridge_root=tmp_path)
+    assert res["already_initialized"] is True
+    assert res["ts"] == 0.0
 
 
 def test_is_interface_initialized(tmp_path):
