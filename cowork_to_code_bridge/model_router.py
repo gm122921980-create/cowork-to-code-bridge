@@ -28,18 +28,18 @@ class ModelTier(str, Enum):
     HAIKU = "haiku"
     SONNET = "sonnet"
     OPUS = "opus"
-    FABO = "fabo"  # Future high-capability model
+    FABLE = "fable"  # High-capability reasoning model
 
 
 class FallbackStrategy(str, Enum):
     """How to handle model unavailability."""
-    CASCADE_UP = "cascade_up"      # Haiku → Sonnet → Opus → Fabo
-    CASCADE_DOWN = "cascade_down"  # Fabo → Opus → Sonnet → Haiku
+    CASCADE_UP = "cascade_up"      # Haiku → Sonnet → Opus → Fable
+    CASCADE_DOWN = "cascade_down"  # Fable → Opus → Sonnet → Haiku
     FAIL_FAST = "fail_fast"        # No fallback, error immediately
 
 
 # Model tier hierarchy (bottom to top)
-TIER_HIERARCHY = [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS, ModelTier.FABO]
+TIER_HIERARCHY = [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS, ModelTier.FABLE]
 
 
 def _validate_model_preference(model_preference: str | ModelTier | None) -> ModelTier:
@@ -117,7 +117,7 @@ def route_task(
     Args:
         script: Path to script to run (e.g., "scripts/analyze.sh")
         args: Script arguments (default: [])
-        model_preference: MANDATORY. One of "haiku", "sonnet", "opus", "fabo".
+        model_preference: MANDATORY. One of "haiku", "sonnet", "opus", "fable".
                          Raises ValueError if missing or invalid.
         fallback_strategy: How to handle model unavailability.
                           CASCADE_UP (default): try higher tiers if unavailable.

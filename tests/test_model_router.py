@@ -36,7 +36,7 @@ def test_validate_model_preference_string():
     assert _validate_model_preference("haiku") == ModelTier.HAIKU
     assert _validate_model_preference("SONNET") == ModelTier.SONNET
     assert _validate_model_preference("OpUs") == ModelTier.OPUS
-    assert _validate_model_preference("fabo") == ModelTier.FABO
+    assert _validate_model_preference("fable") == ModelTier.FABLE
 
 
 def test_validate_model_preference_enum():
@@ -66,27 +66,27 @@ def test_validate_model_preference_type_error():
 
 
 def test_cascade_up_from_haiku():
-    """CASCADE_UP from Haiku: Haiku → Sonnet → Opus → Fabo."""
+    """CASCADE_UP from Haiku: Haiku → Sonnet → Opus → Fable."""
     order = _get_cascade_order(ModelTier.HAIKU, FallbackStrategy.CASCADE_UP)
-    assert order == [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS, ModelTier.FABO]
+    assert order == [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS, ModelTier.FABLE]
 
 
 def test_cascade_up_from_sonnet():
-    """CASCADE_UP from Sonnet: Sonnet → Opus → Fabo."""
+    """CASCADE_UP from Sonnet: Sonnet → Opus → Fable."""
     order = _get_cascade_order(ModelTier.SONNET, FallbackStrategy.CASCADE_UP)
-    assert order == [ModelTier.SONNET, ModelTier.OPUS, ModelTier.FABO]
+    assert order == [ModelTier.SONNET, ModelTier.OPUS, ModelTier.FABLE]
 
 
-def test_cascade_up_from_fabo():
-    """CASCADE_UP from Fabo: just Fabo (already at top)."""
-    order = _get_cascade_order(ModelTier.FABO, FallbackStrategy.CASCADE_UP)
-    assert order == [ModelTier.FABO]
+def test_cascade_up_from_fable():
+    """CASCADE_UP from Fable: just Fable (already at top)."""
+    order = _get_cascade_order(ModelTier.FABLE, FallbackStrategy.CASCADE_UP)
+    assert order == [ModelTier.FABLE]
 
 
-def test_cascade_down_from_fabo():
-    """CASCADE_DOWN from Fabo: Fabo → Opus → Sonnet → Haiku."""
-    order = _get_cascade_order(ModelTier.FABO, FallbackStrategy.CASCADE_DOWN)
-    assert order == [ModelTier.FABO, ModelTier.OPUS, ModelTier.SONNET, ModelTier.HAIKU]
+def test_cascade_down_from_fable():
+    """CASCADE_DOWN from Fable: Fable → Opus → Sonnet → Haiku."""
+    order = _get_cascade_order(ModelTier.FABLE, FallbackStrategy.CASCADE_DOWN)
+    assert order == [ModelTier.FABLE, ModelTier.OPUS, ModelTier.SONNET, ModelTier.HAIKU]
 
 
 def test_cascade_down_from_sonnet():
@@ -103,7 +103,7 @@ def test_cascade_down_from_haiku():
 
 def test_fail_fast_strategy():
     """FAIL_FAST: only try the requested model, no fallback."""
-    for tier in [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS, ModelTier.FABO]:
+    for tier in [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS, ModelTier.FABLE]:
         order = _get_cascade_order(tier, FallbackStrategy.FAIL_FAST)
         assert order == [tier], f"FAIL_FAST should only return {tier}"
 
@@ -111,7 +111,7 @@ def test_fail_fast_strategy():
 def test_cascade_with_string_strategy():
     """Cascade order accepts string strategy names."""
     order = _get_cascade_order(ModelTier.HAIKU, "cascade_up")
-    assert order == [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS, ModelTier.FABO]
+    assert order == [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS, ModelTier.FABLE]
 
 
 # ─────────────────────────────────────────────────────────────────────────── #
@@ -397,7 +397,7 @@ def test_route_task_all_tiers():
         for sub in ("queue", "results", "routing"):
             (bridge_root / sub).mkdir(exist_ok=True)
 
-        for tier in ["haiku", "sonnet", "opus", "fabo"]:
+        for tier in ["haiku", "sonnet", "opus", "fable"]:
             result = route_task(
                 "scripts/test.sh",
                 model_preference=tier,
@@ -406,3 +406,134 @@ def test_route_task_all_tiers():
 
             assert result["selected_model"] == tier
             assert result["status"] == "queued"
+
+
+# ─────────────────────────────────────────────────────────────────────────── #
+# Comprehensive Audit Trail Validation
+# ─────────────────────────────────────────────────────────────────────────── #
+
+
+def test_audit_trail_cascade_up_full_chain():
+    """Full cascade_up chain: Haiku → Sonnet → Opus → Fable all in audit."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bridge_root = Path(tmpdir)
+        for sub in ("queue", "results", "routing"):
+            (bridge_root / sub).mkdir(exist_ok=True)
+
+        result = route_task(
+            "scripts/analysis.sh",
+            model_preference="haiku",
+            fallback_strategy="cascade_up",
+            bridge_root=bridge_root,
+        )
+
+        routing = get_routing_metadata(result["task_id"], bridge_root=bridge_root)
+        assert routing["cascade_order"] == ["haiku", "sonnet", "opus", "fable"]
+        assert routing["requested_model"] == "haiku"
+        assert routing["selected_model"] == "haiku"
+        assert routing["fallback_used"] is False
+
+
+def test_audit_trail_cascade_down_full_chain():
+    """Full cascade_down chain: Fable → Opus → Sonnet → Haiku all in audit."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bridge_root = Path(tmpdir)
+        for sub in ("queue", "results", "routing"):
+            (bridge_root / sub).mkdir(exist_ok=True)
+
+        result = route_task(
+            "scripts/reasoning.sh",
+            model_preference="fable",
+            fallback_strategy="cascade_down",
+            bridge_root=bridge_root,
+        )
+
+        routing = get_routing_metadata(result["task_id"], bridge_root=bridge_root)
+        assert routing["cascade_order"] == ["fable", "opus", "sonnet", "haiku"]
+        assert routing["requested_model"] == "fable"
+
+
+@pytest.mark.parametrize(
+    "tier,strategy,expected_cascade",
+    [
+        # All cascade_up combos
+        ("haiku", "cascade_up", ["haiku", "sonnet", "opus", "fable"]),
+        ("sonnet", "cascade_up", ["sonnet", "opus", "fable"]),
+        ("opus", "cascade_up", ["opus", "fable"]),
+        ("fable", "cascade_up", ["fable"]),
+        # All cascade_down combos
+        ("fable", "cascade_down", ["fable", "opus", "sonnet", "haiku"]),
+        ("opus", "cascade_down", ["opus", "sonnet", "haiku"]),
+        ("sonnet", "cascade_down", ["sonnet", "haiku"]),
+        ("haiku", "cascade_down", ["haiku"]),
+        # All fail_fast (no cascade)
+        ("haiku", "fail_fast", ["haiku"]),
+        ("sonnet", "fail_fast", ["sonnet"]),
+        ("opus", "fail_fast", ["opus"]),
+        ("fable", "fail_fast", ["fable"]),
+    ],
+)
+def test_audit_trail_all_combinations(tier, strategy, expected_cascade):
+    """Audit trail validates every tier + strategy combination."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bridge_root = Path(tmpdir)
+        for sub in ("queue", "results", "routing"):
+            (bridge_root / sub).mkdir(exist_ok=True)
+
+        result = route_task(
+            "scripts/test.sh",
+            model_preference=tier,
+            fallback_strategy=strategy,
+            bridge_root=bridge_root,
+        )
+
+        routing = get_routing_metadata(result["task_id"], bridge_root=bridge_root)
+        assert routing["cascade_order"] == expected_cascade, \
+            f"Cascade mismatch for {tier} + {strategy}"
+
+
+def test_audit_trail_timestamp_validity():
+    """Audit trail timestamps are valid Unix timestamps."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bridge_root = Path(tmpdir)
+        for sub in ("queue", "results", "routing"):
+            (bridge_root / sub).mkdir(exist_ok=True)
+
+        before = time.time()
+        result = route_task(
+            "scripts/test.sh",
+            model_preference="opus",
+            bridge_root=bridge_root,
+        )
+        after = time.time()
+
+        routing = get_routing_metadata(result["task_id"], bridge_root=bridge_root)
+        ts = routing["ts_routed"]
+
+        # Timestamp should be between before and after
+        assert before <= ts <= after
+
+
+def test_audit_trail_isolation_per_task():
+    """Each task has independent audit trail record."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bridge_root = Path(tmpdir)
+        for sub in ("queue", "results", "routing"):
+            (bridge_root / sub).mkdir(exist_ok=True)
+
+        # Route multiple tasks
+        tasks = []
+        for tier in ["haiku", "sonnet", "opus", "fable"]:
+            result = route_task(
+                f"scripts/{tier}_task.sh",
+                model_preference=tier,
+                fallback_strategy="cascade_up",
+                bridge_root=bridge_root,
+            )
+            tasks.append((result["task_id"], tier))
+
+        # Each should have independent routing record
+        for task_id, expected_tier in tasks:
+            routing = get_routing_metadata(task_id, bridge_root=bridge_root)
+            assert routing is not None
+            assert routing["requested_model"] == expected_tier

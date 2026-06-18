@@ -26,19 +26,21 @@
 
 ## Detailed Progress
 
-### PHASE 1: Compliance Gates (15 minutes) — IN PROGRESS
+### PHASE 1: Compliance Gates — PIVOTED
 
-- [ ] **Sign e2B CLA** (5 min)
+#### 1.1: Sign e2B CLA (PENDING)
+- [ ] **Sign CLA** (5 min)
   - URL: https://e2b.dev/docs/cla
   - Sign with GitHub account (abhinaykrupa)
   - Then post: `@cla-bot check` on PR #1114
   - Impact: Unblocks awesome-ai-agents merge
 
-- [ ] **Complete Glama registration** (10 min)
-  - URL: https://glama.ai/mcp/servers
-  - Server: cowork-to-code-bridge (Dockerfile ✅ ready)
-  - Get badge URL and update PR #8163 markdown
-  - Impact: Unblocks awesome-mcp-servers merge
+#### 1.2: Glama Registration (REJECTED → PIVOTED)
+- ❌ **Rejected by Glama:** "Not a pure MCP server"
+- ✅ **Reason:** Glama wants pure MCP implementations; we're a file-based RPC bridge that exposes MCP
+- ✅ **Pivot:** Focus on awesome-mcp-servers (curated list) + ClawHub (third-party extensions)
+- ✅ **Action:** Posted explanation on awesome-mcp-servers PR #8163
+- ✅ **Status:** Proceeding without Glama badge; pursuing ClawHub instead
 
 ---
 

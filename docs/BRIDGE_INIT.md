@@ -83,7 +83,7 @@ list (empty if none). Safe to poll.
 ## 4. MODEL ROUTING — Mandatory Complexity Declaration
 
 **Every task requires an explicit `model_preference` parameter.** This is not optional.
-The bridge routes to the right Claude model tier (Haiku, Sonnet, Opus, Fabo) based on
+The bridge routes to the right Claude model tier (Haiku, Sonnet, Opus, Fable) based on
 task complexity. You declare the tier; the bridge handles cascading fallbacks if needed.
 
 ### Why mandatory?
@@ -103,7 +103,7 @@ from cowork_to_code_bridge.model_router import route_task
 result = route_task(
     "scripts/analyze.sh",
     args=["quarterly_data.csv"],
-    model_preference="sonnet",    # ← REQUIRED: "haiku", "sonnet", "opus", or "fabo"
+    model_preference="sonnet",    # ← REQUIRED: "haiku", "sonnet", "opus", or "fable"
     fallback_strategy="cascade_up"  # optional: cascade up/down if preferred model unavailable
 )
 
@@ -118,11 +118,11 @@ print(f"Fallback used: {result['fallback_used']}")
 | Haiku  | Quick lookups, formatting, simple tasks | minimal   |
 | Sonnet | Standard work, moderate complexity     | moderate  |
 | Opus   | Complex reasoning, planning, analysis  | higher    |
-| Fabo   | Frontier reasoning (future)            | highest   |
+| Fable   | Frontier reasoning (future)            | highest   |
 
 ### Fallback strategies
 
-- **`cascade_up`** (default): if preferred unavailable, try higher tiers. Haiku → Sonnet → Opus → Fabo.
+- **`cascade_up`** (default): if preferred unavailable, try higher tiers. Haiku → Sonnet → Opus → Fable.
 - **`cascade_down`**: if preferred unavailable, try lower tiers. Opus → Sonnet → Haiku.
 - **`fail_fast`**: no fallback; error if preferred tier unavailable.
 
@@ -155,7 +155,7 @@ print(f"Cost: {metadata['selected_model']}")
 Missing `model_preference` raises `ValueError`:
 
 ```
-model_preference is MANDATORY. Specify 'haiku', 'sonnet', 'opus', or 'fabo'.
+model_preference is MANDATORY. Specify 'haiku', 'sonnet', 'opus', or 'fable'.
 See BRIDGE_INIT.md for routing requirements.
 ```
 
@@ -233,7 +233,7 @@ result = route_task(
     "scripts/analyze_quarterly_report.sh",
     args=["Q2_2026.pdf"],
     model_preference="opus",         # High complexity: reasoning + analysis
-    fallback_strategy="cascade_up"   # Try Opus, then Fabo if unavailable
+    fallback_strategy="cascade_up"   # Try Opus, then Fable if unavailable
 )
 
 # Check which model was actually used
