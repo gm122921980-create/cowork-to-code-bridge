@@ -565,6 +565,23 @@ Developers: the full crash-recovery model (the journal, in-flight markers, and t
 
 ---
 
+## Community & Discussions
+
+Active in these framework communities:
+
+| Community | Topic |
+|-----------|-------|
+| [AutoGen Discussions](https://github.com/microsoft/autogen/discussions/7868) | Async local execution for AutoGen agents |
+| [CrewAI Discussions](https://github.com/crewAIInc/crewAI/discussions) | Production-safe local code execution for crews |
+| [LiteLLM Discussions](https://github.com/BerriAI/litellm/discussions/30841) | LiteLLM → Claude Code bridge pattern |
+| [LlamaIndex Discussions](https://github.com/run-llama/llama_index/discussions/22045) | LlamaIndex local executor tool |
+| [Agno Discussions](https://github.com/agno-agi/agno/discussions/8486) | Multi-agent local execution pattern |
+| [Anthropic SDK Discussions](https://github.com/anthropics/anthropic-sdk-python/discussions/1688) | Remote agent → local Claude Code delegation |
+| [MCP Spec Issue #2925](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/2925) | Stateful async operation pattern |
+| [Hermes Agent #47199](https://github.com/NousResearch/hermes-agent/issues/47199) | Subprocess MCP bridge for Hermes |
+
+---
+
 ## Status & contributing
 
 **v0.5.0** — early, but solid. The core works, survives crashes and reboots without repeating risky actions, installs as a global skill (one command), streams live progress for long tasks, and runs on macOS, Linux, and WSL2. Built for myself, open-sourced because it's useful to others. See the [CHANGELOG](https://github.com/abhinaykrupa/cowork-to-code-bridge/blob/main/CHANGELOG.md) for the full history.
