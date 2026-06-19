@@ -5,6 +5,7 @@ for token efficiency, with mandatory complexity declaration and fallback cascadi
 """
 import json
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -248,7 +249,7 @@ def test_route_task_cascade_up():
         )
 
         cascade = result["routing_metadata"]["cascade_order"]
-        assert cascade == ["haiku", "sonnet", "opus", "fabo"]
+        assert cascade == ["haiku", "sonnet", "opus", "fable"]
 
 
 def test_route_task_cascade_down():
@@ -260,13 +261,13 @@ def test_route_task_cascade_down():
 
         result = route_task(
             "scripts/test.sh",
-            model_preference="fabo",
+            model_preference="fable",
             fallback_strategy="cascade_down",
             bridge_root=bridge_root,
         )
 
         cascade = result["routing_metadata"]["cascade_order"]
-        assert cascade == ["fabo", "opus", "sonnet", "haiku"]
+        assert cascade == ["fable", "opus", "sonnet", "haiku"]
 
 
 def test_route_task_fail_fast():

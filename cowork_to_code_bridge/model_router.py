@@ -49,7 +49,7 @@ def _validate_model_preference(model_preference: str | ModelTier | None) -> Mode
     """
     if model_preference is None:
         raise ValueError(
-            "model_preference is MANDATORY. Specify 'haiku', 'sonnet', 'opus', or 'fabo'. "
+            "model_preference is MANDATORY. Specify 'haiku', 'sonnet', 'opus', or 'fable'. "
             "See BRIDGE_INIT.md for routing requirements."
         )
 
