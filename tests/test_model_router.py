@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from cowork_to_code_bridge.model_router import (
+    TIER_TO_MODEL_ID,
     FallbackStrategy,
     ModelTier,
     _get_cascade_order,
@@ -18,8 +19,8 @@ from cowork_to_code_bridge.model_router import (
     get_routing_metadata,
     get_routing_recommendations,
     route_task,
+    tier_to_model_id,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────── #
 # Model Preference Validation
@@ -59,6 +60,36 @@ def test_validate_model_preference_type_error():
         _validate_model_preference(123)
     with pytest.raises(TypeError):
         _validate_model_preference(["haiku"])
+
+
+# ─────────────────────────────────────────────────────────────────────────── #
+# Tier → Model ID Mapping (must stay in sync with run_claude.sh)
+# ─────────────────────────────────────────────────────────────────────────── #
+
+
+def test_tier_to_model_id_all_tiers():
+    """Every tier resolves to its canonical concrete model ID."""
+    assert tier_to_model_id("haiku") == "claude-haiku-4-5-20251001"
+    assert tier_to_model_id("sonnet") == "claude-sonnet-4-6"
+    assert tier_to_model_id("opus") == "claude-opus-4-8"
+    assert tier_to_model_id("fable") == "claude-fable-5"
+
+
+def test_tier_to_model_id_case_insensitive_and_enum():
+    """Accepts uppercase strings and ModelTier enum members."""
+    assert tier_to_model_id("OPUS") == "claude-opus-4-8"
+    assert tier_to_model_id(ModelTier.FABLE) == "claude-fable-5"
+
+
+def test_tier_to_model_id_unknown_raises():
+    """An unknown tier surfaces loudly rather than silently defaulting."""
+    with pytest.raises(ValueError, match="unknown model tier"):
+        tier_to_model_id("gpt-4")
+
+
+def test_tier_to_model_id_mapping_covers_every_tier():
+    """No tier is missing from the canonical mapping."""
+    assert set(TIER_TO_MODEL_ID) == set(ModelTier)
 
 
 # ─────────────────────────────────────────────────────────────────────────── #

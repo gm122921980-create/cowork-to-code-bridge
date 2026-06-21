@@ -558,6 +558,24 @@ def run_one(cmd_path: Path, token_required: str | None,
         # Always forward the owner ceiling so run_claude.sh can enforce it.
         env["BRIDGE_MAX_BUDGET_USD"] = _MAX_BUDGET_USD_STR
 
+    # ── Model tier injection ──────────────────────────────────────────────────
+    # Inject CLAUDE_MODEL_TIER from the command payload so run_claude.sh can map
+    # it to a concrete `--model` ID. The tier is validated against the router's
+    # canonical set; an unknown tier is ignored (logged) so a bad payload falls
+    # back to the CLI default rather than crashing the daemon or dispatching to a
+    # garbage model name. An owner-set CLAUDE_MODEL_TIER in the daemon env always
+    # wins (same precedence as CLAUDE_FLAGS) — the caller can't override it.
+    tier_raw = cmd.get("model_tier")
+    if tier_raw is not None:
+        if "CLAUDE_MODEL_TIER" in env:
+            log("  ! ignoring caller model_tier: owner CLAUDE_MODEL_TIER is set")
+        else:
+            tier_norm = str(tier_raw).strip().lower()
+            if tier_norm in {"haiku", "sonnet", "opus", "fable"}:
+                env["CLAUDE_MODEL_TIER"] = tier_norm
+            else:
+                log(f"  ! ignoring invalid model_tier={tier_raw!r}")
+
     # ─── in-flight marker + journal: started ──────────────────────────────────
     # Marker is written BEFORE subprocess.run. If we crash between this point
     # and the post-run cleanup, recovery on next startup will see the marker,

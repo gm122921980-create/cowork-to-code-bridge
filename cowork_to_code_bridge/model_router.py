@@ -2,7 +2,7 @@
 Model Router Gateway — intelligent model selection for token efficiency.
 
 Routes tasks to appropriate Claude model tier based on complexity:
-  - Opus/Fabo: Complex reasoning, planning, analysis
+  - Opus/Fable: Complex reasoning, planning, analysis
   - Sonnet: Standard work, moderate complexity
   - Haiku: Simple lookups, formatting, lightweight tasks
 
@@ -18,7 +18,7 @@ import json
 import time
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from cowork_to_code_bridge.client import queue_task as _queue_task
 
@@ -40,6 +40,34 @@ class FallbackStrategy(str, Enum):
 
 # Model tier hierarchy (bottom to top)
 TIER_HIERARCHY = [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS, ModelTier.FABLE]
+
+# Canonical tier → concrete Claude model ID. This is the single source of truth
+# the daemon and run_claude.sh rely on to turn a routing tier (e.g. "opus") into
+# the `--model` flag the claude CLI expects. Keep in sync with run_claude.sh's
+# tier_to_model_id() — the shell copy exists so the script stays standalone.
+TIER_TO_MODEL_ID: dict[ModelTier, str] = {
+    ModelTier.HAIKU: "claude-haiku-4-5-20251001",
+    ModelTier.SONNET: "claude-sonnet-4-6",
+    ModelTier.OPUS: "claude-opus-4-8",
+    ModelTier.FABLE: "claude-fable-5",
+}
+
+
+def tier_to_model_id(tier: str | ModelTier) -> str:
+    """Resolve a routing tier ('haiku'|'sonnet'|'opus'|'fable') to a model ID.
+
+    Raises ValueError for an unknown tier so a typo surfaces loudly rather than
+    silently dispatching to the wrong (or default) model.
+    """
+    if isinstance(tier, str):
+        try:
+            tier = ModelTier(tier.lower())
+        except ValueError:
+            valid = ", ".join(t.value for t in TIER_HIERARCHY)
+            raise ValueError(
+                f"unknown model tier {tier!r}; expected one of: {valid}"
+            ) from None
+    return TIER_TO_MODEL_ID[tier]
 
 
 def _validate_model_preference(model_preference: str | ModelTier | None) -> ModelTier:
@@ -63,7 +91,7 @@ def _validate_model_preference(model_preference: str | ModelTier | None) -> Mode
             raise ValueError(
                 f"Invalid model_preference '{model_preference}'. "
                 f"Must be one of: {', '.join(t.value for t in ModelTier)}"
-            )
+            ) from None
 
     raise TypeError(f"model_preference must be str or ModelTier, got {type(model_preference)}")
 
@@ -74,7 +102,7 @@ def _get_cascade_order(
 ) -> list[ModelTier]:
     """Get the order of models to try for fallback.
 
-    For CASCADE_UP: start at initial_tier, go up to Fabo.
+    For CASCADE_UP: start at initial_tier, go up to Fable.
     For CASCADE_DOWN: start at initial_tier, go down to Haiku.
     For FAIL_FAST: only try initial_tier.
     """
