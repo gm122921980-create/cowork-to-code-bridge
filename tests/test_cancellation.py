@@ -7,9 +7,10 @@ This tests the three cancellation scenarios:
 3. Post-execution (operation already completed) → idempotent (no-op)
 """
 import json
+import tempfile
 import time
 from pathlib import Path
-import tempfile
+
 from cowork_to_code_bridge.mcp_server import MCPServer
 
 

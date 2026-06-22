@@ -8,9 +8,6 @@ Covers:
 """
 import json
 import time
-from pathlib import Path
-
-import pytest
 
 from cowork_to_code_bridge.bridge_init import (
     MARKER_NAME,
@@ -20,7 +17,6 @@ from cowork_to_code_bridge.bridge_init import (
     is_first_connection,
     mark_bridge_initialized,
 )
-
 
 # --------------------------------------------------------------------------- #
 # _resolve_bridge_root — resolution order
@@ -140,7 +136,7 @@ def test_mark_bridge_initialized_preserves_existing_marker(tmp_path):
 
 def test_mark_bridge_initialized_atomic_write(tmp_path):
     """Marker is written atomically (.tmp then rename)."""
-    result = mark_bridge_initialized(bridge_root=tmp_path)
+    mark_bridge_initialized(bridge_root=tmp_path)
     marker = tmp_path / MARKER_NAME
 
     # Should not have .tmp file (it was renamed)

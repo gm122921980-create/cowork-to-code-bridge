@@ -100,7 +100,7 @@ def test_mcp_escalate_to_claude_with_reply(mcp_server, bridge_root):
             "arguments": {"request": "Test request", "wait_seconds": 2},
         },
     }
-    resp1 = mcp_server.handle_request(req1)
+    mcp_server.handle_request(req1)
     # Extract request_id from the queued message
     inbox = bridge_root / "to_cowork"
     requests = list(inbox.glob("*.json"))
@@ -131,7 +131,7 @@ def test_mcp_escalate_to_claude_with_reply(mcp_server, bridge_root):
             "arguments": {"request": "Test request 2", "wait_seconds": 2},
         },
     }
-    resp2 = mcp_server.handle_request(req2)
+    mcp_server.handle_request(req2)
     # This is a new request, so it will timeout, but we proved the reply polling works
 
 

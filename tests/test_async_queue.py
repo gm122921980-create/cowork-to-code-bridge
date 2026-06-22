@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from cowork_to_code_bridge.client import queue_task, poll_task_result
+from cowork_to_code_bridge.client import poll_task_result, queue_task
 
 
 @pytest.fixture
