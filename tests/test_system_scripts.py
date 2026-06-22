@@ -583,3 +583,136 @@ def test_mac_ram_json_values_are_numeric(mac_ram_script: Path) -> None:
         assert isinstance(data[key], int), f"{key} should be an int: {data[key]!r}"
     assert data["total_bytes"] > 0
     assert 0 <= data["used_pct"] <= 100
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# mac_disk.sh / mac_top.sh / mac_network.sh / disk_hogs.sh --json (issue #7)
+# Each is extracted from install.sh so the byte-sync guard above already proves
+# the example copy matches; these tests only exercise the new --json branch.
+# ─────────────────────────────────────────────────────────────────────────────
+
+import json  # noqa: E402
+
+
+def _extract_to(tmp_path: Path, script_name: str, marker: str) -> Path:
+    script = tmp_path / script_name
+    script.write_text(_extract_script(script_name, marker))
+    script.chmod(0o755)
+    return script
+
+
+def _run_json(script: Path, *args: str) -> dict:
+    result = subprocess.run(
+        [str(script), *args, "--json"],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)  # raises if invalid JSON
+
+
+# ── mac_disk.sh --json ────────────────────────────────────────────────────────
+
+def test_mac_disk_json_valid_and_keys(tmp_path: Path) -> None:
+    script = _extract_to(tmp_path, "mac_disk.sh", "MD")
+    data = _run_json(script)
+    required = {"path", "total_1k", "used_1k", "avail_1k", "used_pct"}
+    assert not (required - data.keys()), f"missing: {required - data.keys()}"
+    assert data["total_1k"] > 0
+    assert 0 <= data["used_pct"] <= 100
+
+
+def test_mac_disk_text_mode_unchanged(tmp_path: Path) -> None:
+    script = _extract_to(tmp_path, "mac_disk.sh", "MD")
+    result = subprocess.run(
+        [str(script)], capture_output=True, text=True, check=False,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "=== DISK USAGE ===" in result.stdout
+    assert not result.stdout.lstrip().startswith("{"), "text mode must not emit JSON"
+
+
+# ── mac_top.sh --json ─────────────────────────────────────────────────────────
+
+def test_mac_top_json_structure(tmp_path: Path) -> None:
+    script = _extract_to(tmp_path, "mac_top.sh", "MT")
+    data = _run_json(script, "5")
+    assert data["count"] == 5
+    for bucket in ("by_cpu", "by_mem"):
+        assert isinstance(data[bucket], list), bucket
+        assert len(data[bucket]) <= 5
+        for proc in data[bucket]:
+            for key in ("pid", "cpu_pct", "mem_pct", "name"):
+                assert key in proc, f"{bucket} proc missing {key!r}: {proc}"
+            assert isinstance(proc["pid"], int)
+
+
+def test_mac_top_text_mode_unchanged(tmp_path: Path) -> None:
+    script = _extract_to(tmp_path, "mac_top.sh", "MT")
+    result = subprocess.run(
+        [str(script), "5"], capture_output=True, text=True, check=False,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "=== by CPU ===" in result.stdout and "=== by MEM ===" in result.stdout
+
+
+# ── mac_network.sh --json ─────────────────────────────────────────────────────
+
+def test_mac_network_json_structure(tmp_path: Path) -> None:
+    script = _extract_to(tmp_path, "mac_network.sh", "MN")
+    data = _run_json(script)
+    assert isinstance(data["interfaces"], list)
+    for iface in data["interfaces"]:
+        assert "name" in iface and "addr" in iface
+    assert "default_route" in data
+    assert isinstance(data["online"], bool)
+
+
+def test_mac_network_text_mode_unchanged(tmp_path: Path) -> None:
+    script = _extract_to(tmp_path, "mac_network.sh", "MN")
+    result = subprocess.run(
+        [str(script)], capture_output=True, text=True, check=False,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "=== interfaces (active) ===" in result.stdout
+
+
+# ── disk_hogs.sh --json ───────────────────────────────────────────────────────
+
+def test_disk_hogs_json_structure(tmp_path: Path) -> None:
+    script = _extract_to(tmp_path, "disk_hogs.sh", "DH")
+    target = tmp_path / "data"
+    target.mkdir()
+    (target / "big.bin").write_bytes(b"x" * 200_000)
+    (target / "small.txt").write_text("hi")
+    data = _run_json(script, str(target), "5")
+    assert data["path"] == str(target)
+    assert data["count"] == 5
+    assert isinstance(data["items"], list)
+    assert len(data["items"]) >= 1
+    biggest = data["items"][0]
+    for key in ("size_bytes", "size_human", "name"):
+        assert key in biggest, f"item missing {key!r}: {biggest}"
+    assert isinstance(biggest["size_bytes"], int)
+    # items are sorted descending by size
+    sizes = [it["size_bytes"] for it in data["items"]]
+    assert sizes == sorted(sizes, reverse=True)
+
+
+def test_disk_hogs_json_rejects_bad_args(tmp_path: Path) -> None:
+    script = _extract_to(tmp_path, "disk_hogs.sh", "DH")
+    # bad count still rejected even with --json
+    bad = subprocess.run(
+        [str(script), str(tmp_path), "notanumber", "--json"],
+        capture_output=True, text=True, check=False,
+    )
+    assert bad.returncode != 0
+    # missing dir still rejected
+    missing = subprocess.run(
+        [str(script), str(tmp_path / "nope"), "--json"],
+        capture_output=True, text=True, check=False,
+    )
+    assert missing.returncode != 0

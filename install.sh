@@ -658,35 +658,141 @@ exit 0
 MR
 cat > "$BRIDGE_ROOT/scripts/mac_disk.sh" <<'MD'
 #!/usr/bin/env bash
-# mac_disk.sh — disk usage (fast). Args: optional path (default /).
+# mac_disk.sh — disk usage (fast). Args: [path] [--json]   (path default /).
+#   (no flag)   human-readable text (default)
+#   --json      structured JSON for the queried path — parse with json.loads()
+# JSON fields: path, total_1k, used_1k, avail_1k, used_pct
+# No external dependencies (no jq, no python).
 set -u
-echo "=== DISK USAGE ==="; df -h "${1:-/}" 2>/dev/null
-echo; echo "=== ALL MOUNTED VOLUMES ==="; df -h 2>/dev/null | grep -E "^/dev|Filesystem" | head -10
+JSON=0; TARGET="/"
+for arg in "$@"; do
+  case "$arg" in
+    --json) JSON=1 ;;
+    *) TARGET="$arg" ;;
+  esac
+done
+if [ "$JSON" -eq 1 ]; then
+  # POSIX `df -P` gives stable 1K-block columns: Filesystem Blocks Used Avail Cap% Mount
+  read -r TOTAL_1K USED_1K AVAIL_1K USED_PCT <<EOF
+$(df -Pk "$TARGET" 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $2, $3, $4, $5}')
+EOF
+  cat <<EOF
+{
+  "path": "$TARGET",
+  "total_1k": ${TOTAL_1K:-0},
+  "used_1k": ${USED_1K:-0},
+  "avail_1k": ${AVAIL_1K:-0},
+  "used_pct": ${USED_PCT:-0}
+}
+EOF
+else
+  echo "=== DISK USAGE ==="; df -h "$TARGET" 2>/dev/null
+  echo; echo "=== ALL MOUNTED VOLUMES ==="; df -h 2>/dev/null | grep -E "^/dev|Filesystem" | head -10
+fi
 exit 0
 MD
 cat > "$BRIDGE_ROOT/scripts/mac_top.sh" <<'MT'
 #!/usr/bin/env bash
-# mac_top.sh — top processes by CPU and memory (macOS or Linux). Args: count (default 15).
+# mac_top.sh — top processes by CPU and memory (macOS or Linux).
+# Args: [count] [--json]   (count default 15).
+#   (no flag)   human-readable text (default)
+#   --json      structured JSON — parse with json.loads()
+# JSON fields: count, by_cpu[], by_mem[]   (each entry: pid, cpu_pct, mem_pct, name)
+# No external dependencies (no jq, no python).
 set -u
-N="${1:-15}"
-echo "=== by CPU ==="; ps -eo pid,pcpu,pmem,comm 2>/dev/null | sort -k2 -rn | head -"$((N+1))"
-echo "=== by MEM ==="; ps -eo pid,pcpu,pmem,comm 2>/dev/null | sort -k3 -rn | head -"$((N+1))"
+JSON=0; N=15
+for arg in "$@"; do
+  case "$arg" in
+    --json) JSON=1 ;;
+    *) [[ "$arg" =~ ^[0-9]+$ ]] && N="$arg" ;;
+  esac
+done
+if [ "$JSON" -eq 1 ]; then
+  # Emit a JSON array of the top-N rows, sorted by the given column ($1=cpu, $2=mem).
+  emit_procs() {
+    ps -eo pid,pcpu,pmem,comm 2>/dev/null | sort -k"$1" -rn | head -"$N" \
+      | awk 'BEGIN{first=1; printf "["}
+             {
+               name=$4; for(i=5;i<=NF;i++) name=name" "$i;
+               gsub(/\\/,"\\\\",name); gsub(/"/,"\\\"",name);
+               if(!first) printf ",";
+               printf "{\"pid\":%d,\"cpu_pct\":%s,\"mem_pct\":%s,\"name\":\"%s\"}", $1, $2, $3, name;
+               first=0
+             }
+             END{printf "]"}'
+  }
+  printf '{\n  "count": %d,\n  "by_cpu": %s,\n  "by_mem": %s\n}\n' \
+    "$N" "$(emit_procs 2)" "$(emit_procs 3)"
+else
+  echo "=== by CPU ==="; ps -eo pid,pcpu,pmem,comm 2>/dev/null | sort -k2 -rn | head -"$((N+1))"
+  echo "=== by MEM ==="; ps -eo pid,pcpu,pmem,comm 2>/dev/null | sort -k3 -rn | head -"$((N+1))"
+fi
 exit 0
 MT
 cat > "$BRIDGE_ROOT/scripts/mac_network.sh" <<'MN'
 #!/usr/bin/env bash
-# mac_network.sh — network status (macOS or Linux). Args: none.
+# mac_network.sh — network status (macOS or Linux). Args: [--json]
+#   (no flag)   human-readable text (default)
+#   --json      structured JSON — parse with json.loads()
+# JSON fields: interfaces[] (each: name, addr), default_route, online (bool)
+# No external dependencies (no jq, no python).
 set -u
-echo "=== interfaces (active) ==="
-ip -brief addr 2>/dev/null | grep -v '127.0.0.1' \
-  || ifconfig 2>/dev/null | grep -E "^[a-z]|inet " | grep -v "127.0.0.1" | head -20
-echo "=== default route ==="
-ip route show default 2>/dev/null || route -n get default 2>/dev/null | grep -E "gateway|interface"
-echo "=== connectivity ==="
-if ping -c 2 -W 3 1.1.1.1 >/dev/null 2>&1 || ping -c 2 -t 3 1.1.1.1 >/dev/null 2>&1; then
-  echo "online (1.1.1.1 reachable)"
+JSON=0
+for arg in "$@"; do [ "$arg" = "--json" ] && JSON=1; done
+
+get_interfaces() {
+  # one "name addr" pair per line, loopback excluded. Prefer `ip` (Linux),
+  # fall back to `ifconfig` (macOS / older Linux).
+  if command -v ip >/dev/null 2>&1; then
+    ip -brief addr 2>/dev/null | grep -v '127.0.0.1' | awk 'NF>=3{print $1, $3}'
+  else
+    ifconfig 2>/dev/null | awk '
+        /^[a-z]/{iface=$1; sub(/:$/,"",iface)}
+        /inet /{if($2!="127.0.0.1") print iface, $2}'
+  fi
+}
+get_default_route() {
+  if command -v ip >/dev/null 2>&1; then
+    ip route show default 2>/dev/null | awk '{print $3; exit}'
+  else
+    route -n get default 2>/dev/null | awk '/gateway/{print $2; exit}'
+  fi
+}
+is_online() {
+  ping -c 2 -W 3 1.1.1.1 >/dev/null 2>&1 || ping -c 2 -t 3 1.1.1.1 >/dev/null 2>&1
+}
+
+if [ "$JSON" -eq 1 ]; then
+  IFACES_JSON="$(get_interfaces | awk 'BEGIN{first=1; printf "["}
+    NF>=1{
+      name=$1; addr=$2;
+      gsub(/"/,"\\\"",name); gsub(/"/,"\\\"",addr);
+      if(!first) printf ",";
+      printf "{\"name\":\"%s\",\"addr\":\"%s\"}", name, addr;
+      first=0
+    }
+    END{printf "]"}')"
+  ROUTE="$(get_default_route)"
+  if is_online; then ONLINE=true; else ONLINE=false; fi
+  cat <<EOF
+{
+  "interfaces": ${IFACES_JSON:-[]},
+  "default_route": "${ROUTE:-}",
+  "online": ${ONLINE}
+}
+EOF
 else
-  echo "no connectivity"
+  echo "=== interfaces (active) ==="
+  ip -brief addr 2>/dev/null | grep -v '127.0.0.1' \
+    || ifconfig 2>/dev/null | grep -E "^[a-z]|inet " | grep -v "127.0.0.1" | head -20
+  echo "=== default route ==="
+  ip route show default 2>/dev/null || route -n get default 2>/dev/null | grep -E "gateway|interface"
+  echo "=== connectivity ==="
+  if is_online; then
+    echo "online (1.1.1.1 reachable)"
+  else
+    echo "no connectivity"
+  fi
 fi
 exit 0
 MN
@@ -879,10 +985,20 @@ EC
 cat > "$BRIDGE_ROOT/scripts/disk_hogs.sh" <<'DH'
 #!/usr/bin/env bash
 # disk_hogs.sh — biggest files and folders in a directory (default: home).
-# Args: [path] [count]   e.g. call_remote("scripts/disk_hogs.sh", args=["~/Downloads","15"])
+# Args: [path] [count] [--json]   e.g. call_remote("scripts/disk_hogs.sh", args=["~/Downloads","15"])
+#   (no flag)   human-readable text (default)
+#   --json      structured JSON — parse with json.loads()
+# JSON fields: path, count, items[] (each: size_bytes, size_human, name)
 set -uo pipefail
-TARGET="${1:-$HOME}"
-COUNT="${2:-15}"
+JSON=0; POS=()
+for arg in "$@"; do
+  case "$arg" in
+    --json) JSON=1 ;;
+    *) POS+=("$arg") ;;
+  esac
+done
+TARGET="${POS[0]:-$HOME}"
+COUNT="${POS[1]:-15}"
 # expand a leading ~ since args arrive as literal strings
 case "$TARGET" in "~"|"~/"*) TARGET="$HOME${TARGET#\~}";; esac
 if ! [[ "$COUNT" =~ ^[0-9]+$ ]]; then
@@ -891,11 +1007,37 @@ fi
 if [ ! -d "$TARGET" ]; then
   echo "not a directory: $TARGET" >&2; exit 1
 fi
-echo "=== TOP $COUNT LARGEST ITEMS IN $TARGET ==="
-# du over immediate children; sort by size desc; human-readable.
-du -sh "$TARGET"/* "$TARGET"/.[!.]* 2>/dev/null \
-  | sort -rh \
-  | head -n "$COUNT"
+if [ "$JSON" -eq 1 ]; then
+  # `du -k` gives sizes in 1K blocks (portable across macOS/Linux); convert to bytes.
+  ITEMS="$(du -k "$TARGET"/* "$TARGET"/.[!.]* 2>/dev/null \
+    | sort -rn \
+    | head -n "$COUNT" \
+    | awk 'BEGIN{first=1; printf "["}
+           {
+             bytes=$1*1024; name=$2; for(i=3;i<=NF;i++) name=name" "$i;
+             gsub(/\\/,"\\\\",name); gsub(/"/,"\\\"",name);
+             # compact human size
+             h=$1; u="K"; if(h>=1048576){h=h/1048576; u="G"} else if(h>=1024){h=h/1024; u="M"}
+             hs=sprintf("%.1f%s", h, u);
+             if(!first) printf ",";
+             printf "{\"size_bytes\":%d,\"size_human\":\"%s\",\"name\":\"%s\"}", bytes, hs, name;
+             first=0
+           }
+           END{printf "]"}')"
+  cat <<EOF
+{
+  "path": "$TARGET",
+  "count": $COUNT,
+  "items": ${ITEMS:-[]}
+}
+EOF
+else
+  echo "=== TOP $COUNT LARGEST ITEMS IN $TARGET ==="
+  # du over immediate children; sort by size desc; human-readable.
+  du -sh "$TARGET"/* "$TARGET"/.[!.]* 2>/dev/null \
+    | sort -rh \
+    | head -n "$COUNT"
+fi
 exit 0
 DH
 cat > "$BRIDGE_ROOT/scripts/open_browser.sh" <<'OB'
