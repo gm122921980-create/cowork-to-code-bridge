@@ -918,11 +918,106 @@ DLG
 cat > "$BRIDGE_ROOT/scripts/git_status.sh" <<'GS'
 #!/usr/bin/env bash
 # git_status.sh — git status in any repo directory.
-# Usage from Cowork: call_remote("scripts/git_status.sh", args=["/path/to/repo"])
+#
+# Text (default): the familiar `git status --short --branch` output.
+# JSON (--json):   a parseable object Cowork can consume without scraping text —
+#   { "repo", "branch", "upstream", "ahead", "behind", "clean", "files": [ {x,y,path} ] }
+#
+# Usage from Cowork:
+#   call_remote("scripts/git_status.sh", args=["/path/to/repo"])
+#   call_remote("scripts/git_status.sh", args=["/path/to/repo", "--json"])
 set -euo pipefail
-REPO="${1:-$PWD}"
+
+REPO="$PWD"
+JSON=0
+for arg in "$@"; do
+  case "$arg" in
+    --json) JSON=1 ;;
+    *)      REPO="$arg" ;;
+  esac
+done
 cd "$REPO"
-git status --short --branch
+
+if [ "$JSON" -eq 0 ]; then
+  git status --short --branch
+  exit 0
+fi
+
+# ── JSON mode ────────────────────────────────────────────────────────────────
+# Use porcelain v2 + branch headers: stable, machine-oriented, locale-independent.
+status="$(git status --porcelain=v2 --branch 2>/dev/null)"
+
+branch=""
+upstream=""
+ahead=0
+behind=0
+
+while IFS= read -r line; do
+  case "$line" in
+    "# branch.head "*)     branch="${line#\# branch.head }" ;;
+    "# branch.upstream "*) upstream="${line#\# branch.upstream }" ;;
+    "# branch.ab "*)
+      ab="${line#\# branch.ab }"
+      a="${ab%% *}"; b="${ab##* }"
+      ahead="${a#+}"; behind="${b#-}"
+      ;;
+  esac
+done <<< "$status"
+
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+files_json=""
+append_file() {
+  local x="$1" y="$2" path="$3"
+  local entry
+  entry="{\"x\":\"$(json_escape "$x")\",\"y\":\"$(json_escape "$y")\",\"path\":\"$(json_escape "$path")\"}"
+  if [ -z "$files_json" ]; then files_json="$entry"; else files_json="$files_json,$entry"; fi
+}
+
+unquote_path() {
+  local p="$1"
+  case "$p" in
+    \"*\")
+      p="${p#\"}"; p="${p%\"}"
+      p="${p//\\\"/\"}"; p="${p//\\\\/\\}"
+      ;;
+  esac
+  printf '%s' "$p"
+}
+
+while IFS= read -r line; do
+  case "$line" in
+    "1 "*)
+      xy="$(printf '%s' "$line" | cut -d' ' -f2)"
+      path="$(printf '%s' "$line" | cut -d' ' -f9-)"
+      append_file "${xy:0:1}" "${xy:1:1}" "$path"
+      ;;
+    "2 "*)
+      xy="$(printf '%s' "$line" | cut -d' ' -f2)"
+      rest="$(printf '%s' "$line" | cut -d' ' -f10-)"
+      path="${rest%%$'\t'*}"
+      append_file "${xy:0:1}" "${xy:1:1}" "$path"
+      ;;
+    "u "*)
+      xy="$(printf '%s' "$line" | cut -d' ' -f2)"
+      path="$(printf '%s' "$line" | cut -d' ' -f11-)"
+      append_file "${xy:0:1}" "${xy:1:1}" "$path"
+      ;;
+    "? "*)
+      append_file "?" "?" "$(unquote_path "${line#\? }")"
+      ;;
+  esac
+done <<< "$status"
+
+clean=true
+[ -n "$files_json" ] && clean=false
+
+repo_abs="$(pwd)"
+printf '{"repo":"%s","branch":"%s","upstream":"%s","ahead":%s,"behind":%s,"clean":%s,"files":[%s]}\n' \
+  "$(json_escape "$repo_abs")" \
+  "$(json_escape "$branch")" \
+  "$(json_escape "$upstream")" \
+  "${ahead:-0}" "${behind:-0}" "$clean" "$files_json"
 GS
 cat > "$BRIDGE_ROOT/scripts/list_scripts.sh" <<'LS'
 #!/usr/bin/env bash

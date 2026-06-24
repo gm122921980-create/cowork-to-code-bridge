@@ -149,6 +149,8 @@ What's the git status in /Users/me/projects/myrepo? Short summary only.
 **What the bridge does:**
 
 - Runs **`git_status.sh`** with your repo path — `git status --short --branch`.
+  Pass `--json` for a parseable `{branch, upstream, ahead, behind, clean, files}`
+  object instead of scraping the text.
 - Fast, read-only; no commits or checkouts.
 - Useful before asking Claude Code to fix tests or cut a release in the same repo.
 

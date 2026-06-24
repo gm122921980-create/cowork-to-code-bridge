@@ -716,3 +716,138 @@ def test_disk_hogs_json_rejects_bad_args(tmp_path: Path) -> None:
         capture_output=True, text=True, check=False,
     )
     assert missing.returncode != 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# git_status.sh --json tests (issue #7)
+#
+# These extract the script from the install.sh template (via _extract_to) so the
+# embedded copy — the one users actually get — is what gets exercised.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+
+
+def _init_repo(repo: Path) -> None:
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@t.co")
+    _git(repo, "config", "user.name", "t")
+    (repo / "a.txt").write_text("a\n")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-qm", "init")
+
+
+def _run_git_status(script: Path, repo: Path, json_flag: bool) -> subprocess.CompletedProcess[str]:
+    args = [str(script), str(repo)]
+    if json_flag:
+        args.append("--json")
+    return subprocess.run(args, capture_output=True, text=True, check=False)
+
+
+def test_git_status_text_mode_unchanged(tmp_path: Path) -> None:
+    """Default (no --json) is the familiar porcelain text — branch header present."""
+    script = _extract_to(tmp_path, "git_status.sh", "GS")
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    res = _run_git_status(script, repo, json_flag=False)
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.startswith("## main")
+    assert "{" not in res.stdout  # not JSON
+
+
+def test_git_status_json_clean_repo(tmp_path: Path) -> None:
+    """--json on a clean repo: valid JSON, clean=true, empty files, branch set."""
+    import json
+
+    script = _extract_to(tmp_path, "git_status.sh", "GS")
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    res = _run_git_status(script, repo, json_flag=True)
+    assert res.returncode == 0, res.stderr
+    data = json.loads(res.stdout)
+    assert data["branch"] == "main"
+    assert data["clean"] is True
+    assert data["files"] == []
+    assert data["ahead"] == 0 and data["behind"] == 0
+    assert data["repo"].endswith("repo")
+
+
+def test_git_status_json_required_keys(tmp_path: Path) -> None:
+    import json
+
+    script = _extract_to(tmp_path, "git_status.sh", "GS")
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    data = json.loads(_run_git_status(script, repo, json_flag=True).stdout)
+    for key in ("repo", "branch", "upstream", "ahead", "behind", "clean", "files"):
+        assert key in data, f"missing key: {key}"
+
+
+def test_git_status_json_dirty_and_staged(tmp_path: Path) -> None:
+    """Unstaged modify + staged add are both reported with porcelain XY codes."""
+    import json
+
+    script = _extract_to(tmp_path, "git_status.sh", "GS")
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.txt").write_text("a\nmodified\n")  # unstaged modify
+    (repo / "b.txt").write_text("new\n")
+    _git(repo, "add", "b.txt")  # staged add
+    data = json.loads(_run_git_status(script, repo, json_flag=True).stdout)
+    assert data["clean"] is False
+    paths = {f["path"]: (f["x"], f["y"]) for f in data["files"]}
+    assert "a.txt" in paths and paths["a.txt"] == (".", "M")  # unstaged modify
+    assert "b.txt" in paths and paths["b.txt"] == ("A", ".")  # staged add
+
+
+def test_git_status_json_rename_reports_new_path(tmp_path: Path) -> None:
+    """A staged rename must report the new path, not 'R100 newpath'."""
+    import json
+
+    script = _extract_to(tmp_path, "git_status.sh", "GS")
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _git(repo, "mv", "a.txt", "renamed.txt")
+    data = json.loads(_run_git_status(script, repo, json_flag=True).stdout)
+    paths = {f["path"]: f["x"] for f in data["files"]}
+    assert "renamed.txt" in paths
+    assert paths["renamed.txt"] == "R"
+    # the porcelain score token must not leak into the path
+    assert not any(p.startswith("R100 ") for p in paths)
+
+
+def test_git_status_json_untracked_quoted_path_unwrapped(tmp_path: Path) -> None:
+    """Untracked path with special chars is C-quoted by git; we unwrap it."""
+    import json
+
+    script = _extract_to(tmp_path, "git_status.sh", "GS")
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / 'weird "name".txt').write_text("z\n")
+    data = json.loads(_run_git_status(script, repo, json_flag=True).stdout)
+    paths = [f["path"] for f in data["files"] if f["x"] == "?"]
+    assert 'weird "name".txt' in paths, paths
+
+
+def test_git_status_json_ahead_behind(tmp_path: Path) -> None:
+    """ahead/behind reflect divergence from an upstream."""
+    import json
+
+    script = _extract_to(tmp_path, "git_status.sh", "GS")
+    upstream = tmp_path / "upstream"
+    _init_repo(upstream)
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(upstream), str(clone))
+    _git(clone, "config", "user.email", "t@t.co")
+    _git(clone, "config", "user.name", "t")
+    # one local commit ahead of origin
+    (clone / "c.txt").write_text("c\n")
+    _git(clone, "add", "c.txt")
+    _git(clone, "commit", "-qm", "ahead")
+    data = json.loads(_run_git_status(script, clone, json_flag=True).stdout)
+    assert data["ahead"] == 1
+    assert data["behind"] == 0
+    assert data["upstream"]  # non-empty (e.g. origin/main)
